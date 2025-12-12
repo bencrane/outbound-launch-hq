@@ -116,8 +116,9 @@ export default function CompaniesPage() {
     setSendResult(null);
 
     try {
+      // Always POST to dispatcher - it needs company data in the body
       const response = await fetch(dispatcherUrl, {
-        method: workflow.request_type || "POST",
+        method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${supabaseAnonKey}`,

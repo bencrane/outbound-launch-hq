@@ -149,37 +149,35 @@ export default function ConfigureEdgeFunctionsPage() {
 
     return (
       <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-gray-700">{label}</label>
           {currentValue && (
             <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">Assigned</span>
           )}
         </div>
-        <div className="flex gap-2">
-          <select
-            value={localValue}
-            onChange={(e) => setLocalValue(e.target.value)}
-            className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            disabled={isSaving}
-          >
-            <option value="">-- None --</option>
-            {edgeFunctions.map((fn) => (
-              <option key={fn.id} value={fn.slug}>{fn.slug}</option>
-            ))}
-          </select>
-          <button
-            onClick={() => handleAssign(role, localValue)}
-            disabled={!hasChanged || isSaving}
-            className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isSaving ? "..." : "Save"}
-          </button>
-        </div>
+        <select
+          value={localValue}
+          onChange={(e) => setLocalValue(e.target.value)}
+          className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mb-2"
+          disabled={isSaving}
+        >
+          <option value="">-- None --</option>
+          {edgeFunctions.map((fn) => (
+            <option key={fn.id} value={fn.slug}>{fn.slug}</option>
+          ))}
+        </select>
         {currentValue && (
-          <p className="mt-2 text-xs text-gray-500 truncate" title={currentValue}>
-            Current: {currentValue}
+          <p className="text-xs text-gray-500 truncate mb-2" title={currentValue}>
+            {currentValue}
           </p>
         )}
+        <button
+          onClick={() => handleAssign(role, localValue)}
+          disabled={!hasChanged || isSaving}
+          className="w-full px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isSaving ? "Saving..." : "Save"}
+        </button>
       </div>
     );
   };
@@ -251,17 +249,17 @@ export default function ConfigureEdgeFunctionsPage() {
                 <h3 className="text-sm font-medium text-gray-700 uppercase tracking-wide">
                   Workflow Pipeline
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <RoleCard
                     role="dispatcher"
-                    label="Dispatcher"
+                    label="1. Dispatcher"
                     currentValue={selectedWorkflow.dispatcher_function_name}
                   />
 
                   {/* Destination Endpoint (Read Only) */}
                   <div className="bg-white border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <label className="text-sm font-medium text-gray-700">Destination</label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-medium text-gray-700">2. Destination</label>
                       {selectedWorkflow.destination_endpoint_url && (
                         <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
                           {selectedWorkflow.destination_type || "URL"}
@@ -269,22 +267,23 @@ export default function ConfigureEdgeFunctionsPage() {
                       )}
                     </div>
                     {selectedWorkflow.destination_endpoint_url ? (
-                      <code className="text-xs text-gray-800 bg-gray-100 px-2 py-2 rounded block truncate" title={selectedWorkflow.destination_endpoint_url}>
+                      <code className="text-xs text-gray-800 bg-gray-100 px-2 py-1.5 rounded block truncate mb-2" title={selectedWorkflow.destination_endpoint_url}>
                         {selectedWorkflow.destination_endpoint_url}
                       </code>
                     ) : (
-                      <p className="text-xs text-gray-400 py-2">Not configured</p>
+                      <p className="text-xs text-gray-400 py-1.5 mb-2">Not configured</p>
                     )}
+                    <p className="text-xs text-gray-400">(Set in workflow settings)</p>
                   </div>
 
                   <RoleCard
                     role="storage_worker"
-                    label="Storage Worker"
+                    label="3. Storage Worker"
                     currentValue={selectedWorkflow.storage_worker_function_name}
                   />
                   <RoleCard
                     role="global_logger"
-                    label="Global Logger"
+                    label="4. Global Logger"
                     currentValue={selectedWorkflow.global_logger_function_name}
                   />
                 </div>

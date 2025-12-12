@@ -131,7 +131,7 @@ export default function ViewEdgeFunctionsPage() {
 
                 <div className="p-4">
                   {/* Pipeline: Dispatcher → Destination → Storage Worker → Global Logger */}
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                     {/* Dispatcher */}
                     <div className={`rounded-lg p-3 ${workflow.dispatcher_function_name ? "bg-blue-50 border border-blue-200" : "bg-gray-50 border border-gray-200"}`}>
                       <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
