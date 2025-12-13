@@ -1,10 +1,15 @@
 import Link from "next/link";
 
-const adminCards = [
+const outboundLaunchCards = [
   {
     name: "Dashboard",
     description: "View database stats and connection status",
     href: "/",
+  },
+  {
+    name: "Upload Companies",
+    description: "Import companies from CSV",
+    href: "/admin/upload-companies",
   },
   {
     name: "Table Schema Viewer",
@@ -43,26 +48,62 @@ const adminCards = [
   },
 ];
 
+const gtmTeaserCards = [
+  {
+    name: "Table Schema Viewer",
+    description: "Explore GTM database table schemas",
+    href: "/admin/gtm/schema",
+  },
+  {
+    name: "Upload Target Companies",
+    description: "Import target companies from CSV",
+    href: "/admin/gtm/upload-target-companies",
+  },
+  {
+    name: "Upload Case Study URLs",
+    description: "Import case study URLs for target companies",
+    href: "/admin/gtm/upload-case-study-urls",
+  },
+];
+
+function CardGrid({ cards }: { cards: typeof outboundLaunchCards }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {cards.map((card) => (
+        <Link
+          key={card.href + card.name}
+          href={card.href}
+          className={`block bg-white rounded-lg shadow p-5 hover:shadow-lg transition-shadow border border-gray-200 hover:border-gray-300 ${card.href === "#" ? "opacity-50 cursor-default" : ""}`}
+        >
+          <h3 className="text-base font-semibold text-gray-900 mb-1">
+            {card.name}
+          </h3>
+          <p className="text-sm text-gray-600">{card.description}</p>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export default function AdminPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-2">Admin</h1>
       <p className="text-gray-600 mb-8">System tools and configuration</p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {adminCards.map((card) => (
-          <Link
-            key={card.href}
-            href={card.href}
-            className="block bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow border border-gray-200 hover:border-gray-300"
-          >
-            <h2 className="text-lg font-semibold text-gray-900 mb-2">
-              {card.name}
-            </h2>
-            <p className="text-sm text-gray-600">{card.description}</p>
-          </Link>
-        ))}
-      </div>
+      <section className="mb-10">
+        <h2 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
+          Outbound Launch HQ DB
+        </h2>
+        <CardGrid cards={outboundLaunchCards} />
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
+          GTM Teaser Demo DB
+        </h2>
+        <CardGrid cards={gtmTeaserCards} />
+      </section>
     </div>
   );
 }

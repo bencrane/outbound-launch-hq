@@ -9,6 +9,7 @@ interface EnrichmentWorkflow {
   title: string;
   workflow_slug: string;
   description: string | null;
+  category: string | null;
   request_type: string | null;
   destination_type: string | null;
   destination_endpoint_url: string | null;
@@ -30,6 +31,7 @@ interface ColumnConfig {
 const COLUMNS: ColumnConfig[] = [
   { key: "title", label: "Title", defaultWidth: 150 },
   { key: "workflow_slug", label: "Slug", defaultWidth: 120 },
+  { key: "category", label: "Category", defaultWidth: 100 },
   { key: "description", label: "Description", defaultWidth: 200 },
   { key: "request_type", label: "Request Type", defaultWidth: 100 },
   { key: "destination_type", label: "Destination", defaultWidth: 100 },
@@ -42,6 +44,7 @@ const COLUMNS: ColumnConfig[] = [
 const REQUEST_TYPES = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const DESTINATION_TYPES = ["api", "n8n", "pipedream", "clay"];
 const STATUS_TYPES = ["draft", "active", "inactive"];
+const CATEGORY_TYPES = ["Outbound Launch HQ", "GTM Teaser HQ"];
 
 export default function ViewEnrichmentWorkflowsPage() {
   const [workflows, setWorkflows] = useState<EnrichmentWorkflow[]>([]);
@@ -50,6 +53,8 @@ export default function ViewEnrichmentWorkflowsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editedWorkflow, setEditedWorkflow] = useState<EnrichmentWorkflow | null>(null);
   const [saving, setSaving] = useState(false);
+  const [editingAll, setEditingAll] = useState(false);
+  const [editedWorkflows, setEditedWorkflows] = useState<Map<string, EnrichmentWorkflow>>(new Map());
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(
     Object.fromEntries(COLUMNS.map(col => [col.key, col.defaultWidth]))
   );
@@ -112,6 +117,7 @@ export default function ViewEnrichmentWorkflowsPage() {
       .update({
         title: editedWorkflow.title,
         workflow_slug: editedWorkflow.workflow_slug,
+        category: editedWorkflow.category,
         description: editedWorkflow.description,
         request_type: editedWorkflow.request_type,
         destination_type: editedWorkflow.destination_type,
@@ -140,6 +146,73 @@ export default function ViewEnrichmentWorkflowsPage() {
   const handleFieldChange = (field: keyof EnrichmentWorkflow, value: string) => {
     if (!editedWorkflow) return;
     setEditedWorkflow({ ...editedWorkflow, [field]: value });
+  };
+
+  const handleEditAll = () => {
+    setEditingAll(true);
+    const map = new Map<string, EnrichmentWorkflow>();
+    workflows.forEach(w => map.set(w.id, { ...w }));
+    setEditedWorkflows(map);
+  };
+
+  const handleCancelAll = () => {
+    setEditingAll(false);
+    setEditedWorkflows(new Map());
+  };
+
+  const handleFieldChangeAll = (workflowId: string, field: keyof EnrichmentWorkflow, value: string) => {
+    setEditedWorkflows(prev => {
+      const next = new Map(prev);
+      const workflow = next.get(workflowId);
+      if (workflow) {
+        next.set(workflowId, { ...workflow, [field]: value });
+      }
+      return next;
+    });
+  };
+
+  const handleSaveAll = async () => {
+    if (!supabaseUrl || !supabaseAnonKey) return;
+
+    setSaving(true);
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    try {
+      const updates = Array.from(editedWorkflows.values()).map(w => ({
+        id: w.id,
+        title: w.title,
+        workflow_slug: w.workflow_slug,
+        category: w.category,
+        description: w.description,
+        request_type: w.request_type,
+        destination_type: w.destination_type,
+        destination_endpoint_url: w.destination_endpoint_url,
+        dispatcher_function_name: w.dispatcher_function_name,
+        receiver_function_name: w.receiver_function_name,
+        dispatcher_function_url: w.dispatcher_function_url,
+        receiver_function_url: w.receiver_function_url,
+        status: w.status,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const { error: updateError } = await supabase
+        .from("db_driven_enrichment_workflows")
+        .upsert(updates);
+
+      if (updateError) {
+        setError(updateError.message);
+        setSaving(false);
+        return;
+      }
+
+      setWorkflows(Array.from(editedWorkflows.values()));
+      setEditingAll(false);
+      setEditedWorkflows(new Map());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleResizeStart = (e: React.MouseEvent, columnKey: string) => {
@@ -186,18 +259,37 @@ export default function ViewEnrichmentWorkflowsPage() {
 
   const visibleColumnConfigs = COLUMNS.filter(col => visibleColumns.has(col.key));
 
-  const renderCell = (workflow: EnrichmentWorkflow, field: keyof EnrichmentWorkflow, isEditing: boolean) => {
-    const value = isEditing ? editedWorkflow?.[field] : workflow[field];
+  const renderCell = (workflow: EnrichmentWorkflow, field: keyof EnrichmentWorkflow, isEditing: boolean, isEditingAll: boolean) => {
+    const value = isEditingAll
+      ? editedWorkflows.get(workflow.id)?.[field]
+      : (isEditing ? editedWorkflow?.[field] : workflow[field]);
 
-    if (!isEditing) {
+    const handleChange = isEditingAll
+      ? (val: string) => handleFieldChangeAll(workflow.id, field, val)
+      : (val: string) => handleFieldChange(field, val);
+
+    if (!isEditing && !isEditingAll) {
       return <span className="text-sm text-gray-900">{value || "-"}</span>;
+    }
+
+    if (field === "category") {
+      return (
+        <select
+          value={value || ""}
+          onChange={(e) => handleChange(e.target.value)}
+          className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+        >
+          <option value="">--</option>
+          {CATEGORY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      );
     }
 
     if (field === "request_type") {
       return (
         <select
           value={value || ""}
-          onChange={(e) => handleFieldChange(field, e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
         >
           <option value="">--</option>
@@ -210,7 +302,7 @@ export default function ViewEnrichmentWorkflowsPage() {
       return (
         <select
           value={value || ""}
-          onChange={(e) => handleFieldChange(field, e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
         >
           <option value="">--</option>
@@ -223,7 +315,7 @@ export default function ViewEnrichmentWorkflowsPage() {
       return (
         <select
           value={value || ""}
-          onChange={(e) => handleFieldChange(field, e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
         >
           {STATUS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -235,7 +327,7 @@ export default function ViewEnrichmentWorkflowsPage() {
       return (
         <textarea
           value={value || ""}
-          onChange={(e) => handleFieldChange(field, e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
           rows={2}
         />
@@ -246,7 +338,7 @@ export default function ViewEnrichmentWorkflowsPage() {
       <input
         type="text"
         value={value || ""}
-        onChange={(e) => handleFieldChange(field, e.target.value)}
+        onChange={(e) => handleChange(e.target.value)}
         className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
       />
     );
@@ -272,30 +364,59 @@ export default function ViewEnrichmentWorkflowsPage() {
         </div>
       )}
 
-      <div className="mb-4 relative">
-        <button
-          onClick={() => setShowColumnMenu(!showColumnMenu)}
-          className="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 flex items-center gap-2"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z" />
-          </svg>
-          Columns
-        </button>
-        {showColumnMenu && (
-          <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-10 p-2 min-w-[200px]">
-            {COLUMNS.map(col => (
-              <label key={col.key} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={visibleColumns.has(col.key)}
-                  onChange={() => toggleColumn(col.key)}
-                  className="rounded border-gray-300"
-                />
-                <span className="text-sm text-gray-700">{col.label}</span>
-              </label>
-            ))}
+      <div className="mb-4 flex items-center gap-3">
+        <div className="relative">
+          <button
+            onClick={() => setShowColumnMenu(!showColumnMenu)}
+            className="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 flex items-center gap-2"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z" />
+            </svg>
+            Columns
+          </button>
+          {showColumnMenu && (
+            <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-10 p-2 min-w-[200px]">
+              {COLUMNS.map(col => (
+                <label key={col.key} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={visibleColumns.has(col.key)}
+                    onChange={() => toggleColumn(col.key)}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm text-gray-700">{col.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {editingAll ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSaveAll}
+              disabled={saving}
+              className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? "Saving..." : "Save All"}
+            </button>
+            <button
+              onClick={handleCancelAll}
+              disabled={saving}
+              className="px-4 py-2 text-sm bg-gray-500 text-white rounded-md hover:bg-gray-600 disabled:opacity-50"
+            >
+              Cancel
+            </button>
           </div>
+        ) : (
+          <button
+            onClick={handleEditAll}
+            disabled={editingId !== null}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Edit All
+          </button>
         )}
       </div>
 
@@ -329,21 +450,24 @@ export default function ViewEnrichmentWorkflowsPage() {
             <tbody className="divide-y divide-gray-200">
               {workflows.map((workflow) => {
                 const isEditing = editingId === workflow.id;
+                const rowHighlight = isEditing || editingAll ? "bg-blue-50" : "";
                 return (
-                  <tr key={workflow.id} className={isEditing ? "bg-blue-50" : ""}>
+                  <tr key={workflow.id} className={rowHighlight}>
                     {visibleColumnConfigs.map((col) => (
                       <td
                         key={col.key}
                         className="px-4 py-3 overflow-hidden"
                         style={{ width: columnWidths[col.key] }}
                       >
-                        <div className="truncate">
-                          {renderCell(workflow, col.key, isEditing)}
+                        <div className={editingAll || isEditing ? "" : "truncate"}>
+                          {renderCell(workflow, col.key, isEditing, editingAll)}
                         </div>
                       </td>
                     ))}
                     <td className="px-4 py-3 whitespace-nowrap w-20">
-                      {isEditing ? (
+                      {editingAll ? (
+                        <span className="text-xs text-gray-400">-</span>
+                      ) : isEditing ? (
                         <div className="flex gap-2">
                           <button
                             onClick={handleSave}

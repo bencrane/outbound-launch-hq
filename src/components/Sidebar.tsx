@@ -6,10 +6,10 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { name: "Admin", href: "/admin" },
   { name: "Dashboard", href: "/" },
-  { name: "Companies", href: "/companies" },
+  { name: "Outbound Launch Companies", href: "/companies" },
+  { name: "Enrichment Eligible Companies", href: "/hq-target-companies" },
   { name: "Enrichment Results", href: "/enrichment-results" },
   { name: "People", href: "/people" },
-  { name: "PDL Companies", href: "/pdl-companies" },
 ];
 
 export function Sidebar() {

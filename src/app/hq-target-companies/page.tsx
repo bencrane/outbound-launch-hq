@@ -2,13 +2,22 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Company, DBDrivenEnrichmentWorkflow } from "@/types/database";
+import { DBDrivenEnrichmentWorkflow } from "@/types/database";
+
+interface HQTargetCompany {
+  id: string;
+  company_name: string | null;
+  company_domain: string | null;
+  company_linkedin_url: string | null;
+  ai_determined_case_studies_main_page_url: string | null;
+  created_at: string;
+}
 
 type SortField = "company_name" | "company_domain" | "created_at";
 type SortDirection = "asc" | "desc";
 
-export default function CompaniesPage() {
-  const [companies, setCompanies] = useState<Company[]>([]);
+export default function HQTargetCompaniesPage() {
+  const [companies, setCompanies] = useState<HQTargetCompany[]>([]);
   const [workflows, setWorkflows] = useState<DBDrivenEnrichmentWorkflow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -19,43 +28,52 @@ export default function CompaniesPage() {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  const gtmUrl = process.env.NEXT_PUBLIC_GTM_SUPABASE_URL;
+  const gtmAnonKey = process.env.NEXT_PUBLIC_GTM_SUPABASE_ANON_KEY;
   const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   useEffect(() => {
     async function fetchData() {
-      if (!supabaseUrl || !supabaseAnonKey) {
-        setError("Supabase not configured");
+      if (!gtmUrl || !gtmAnonKey) {
+        setError("GTM Teaser DB not configured");
         setLoading(false);
         return;
       }
 
-      const supabase = createClient(supabaseUrl, supabaseAnonKey);
+      const gtmSupabase = createClient(gtmUrl, gtmAnonKey);
 
-      const [companiesResult, workflowsResult] = await Promise.all([
-        supabase.from("companies").select("*"),
-        supabase.from("db_driven_enrichment_workflows").select("*").eq("status", "active").eq("category", "Outbound Launch HQ"),
-      ]);
+      // Fetch companies from GTM DB
+      const { data: companiesData, error: fetchError } = await gtmSupabase
+        .from("hq_target_companies")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-      if (companiesResult.error) {
-        setError(companiesResult.error.message);
+      if (fetchError) {
+        setError(fetchError.message);
         setLoading(false);
         return;
       }
 
-      if (workflowsResult.error) {
-        console.error("Failed to fetch workflows:", workflowsResult.error);
+      setCompanies(companiesData || []);
+
+      // Fetch workflows from Outbound Launch DB (only active GTM Teaser HQ workflows)
+      if (supabaseUrl && supabaseAnonKey) {
+        const outboundSupabase = createClient(supabaseUrl, supabaseAnonKey);
+        const { data: workflowsData } = await outboundSupabase
+          .from("db_driven_enrichment_workflows")
+          .select("*")
+          .eq("status", "active")
+          .eq("category", "GTM Teaser HQ");
+        setWorkflows(workflowsData || []);
       }
 
-      setCompanies(companiesResult.data || []);
-      setWorkflows(workflowsResult.data || []);
       setLoading(false);
     }
 
     fetchData();
-  }, [supabaseUrl, supabaseAnonKey]);
+  }, [gtmUrl, gtmAnonKey, supabaseUrl, supabaseAnonKey]);
 
-  // Sort companies
   const sortedCompanies = useMemo(() => {
     const sorted = [...companies];
 
@@ -116,7 +134,6 @@ export default function CompaniesPage() {
     setSendResult(null);
 
     try {
-      // Always POST to dispatcher - it needs company data in the body
       const response = await fetch(dispatcherUrl, {
         method: "POST",
         headers: {
@@ -194,8 +211,8 @@ export default function CompaniesPage() {
   if (loading) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Companies</h1>
-        <p className="text-gray-600">Loading companies...</p>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Enrichment Eligible Companies</h1>
+        <p className="text-gray-600">Loading...</p>
       </div>
     );
   }
@@ -203,7 +220,7 @@ export default function CompaniesPage() {
   if (error) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Companies</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Enrichment Eligible Companies</h1>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800">{error}</p>
         </div>
@@ -214,7 +231,10 @@ export default function CompaniesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Companies</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Enrichment Eligible Companies</h1>
+          <p className="text-sm text-gray-500 mt-1">Companies ready for case study enrichment</p>
+        </div>
         <span className="text-sm text-gray-500">
           {companies.length} record{companies.length !== 1 ? "s" : ""}
         </span>
@@ -294,7 +314,10 @@ export default function CompaniesPage() {
 
       {sortedCompanies.length === 0 ? (
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
-          <p className="text-gray-600">No companies found.</p>
+          <p className="text-gray-600">No target companies found.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Upload companies via Admin → GTM Teaser Demo DB → Upload Target Companies
+          </p>
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
@@ -329,6 +352,9 @@ export default function CompaniesPage() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     LinkedIn
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Case Studies URL
                   </th>
                   <th
                     onClick={() => handleSort("created_at")}
@@ -379,6 +405,20 @@ export default function CompaniesPage() {
                           className="text-blue-600 hover:underline"
                         >
                           View
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-600 max-w-xs truncate">
+                      {company.ai_determined_case_studies_main_page_url ? (
+                        <a
+                          href={company.ai_determined_case_studies_main_page_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          {company.ai_determined_case_studies_main_page_url}
                         </a>
                       ) : (
                         "—"
