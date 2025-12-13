@@ -32,8 +32,8 @@ export default function EnrichmentWorkflowsPage() {
   const [formData, setFormData] = useState<WorkflowFormData>(emptyForm);
   const [saving, setSaving] = useState(false);
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   const getSupabase = () => {
     if (!supabaseUrl || !supabaseAnonKey) return null;

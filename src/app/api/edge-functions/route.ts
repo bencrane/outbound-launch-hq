@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   const accessToken = process.env.NEXT_SUPABASE_ACCESS_TOKEN;
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
 
   if (!accessToken) {
     return NextResponse.json(

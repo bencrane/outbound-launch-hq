@@ -61,8 +61,8 @@ export default function ViewEnrichmentWorkflowsPage() {
   const resizeStartX = useRef(0);
   const resizeStartWidth = useRef(0);
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   useEffect(() => {
     fetchWorkflows();

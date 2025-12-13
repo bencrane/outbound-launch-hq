@@ -36,8 +36,8 @@ export default function ConfigureEdgeFunctionsPage() {
   const [saving, setSaving] = useState<FunctionRole | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   useEffect(() => {
     fetchData();

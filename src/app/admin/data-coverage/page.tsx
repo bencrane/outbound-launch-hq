@@ -32,8 +32,8 @@ export default function DataCoveragePage() {
   const [specificTableHas, setSpecificTableHas] = useState<boolean>(true);
   const [searchFilter, setSearchFilter] = useState("");
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   useEffect(() => {
     async function fetchData() {
