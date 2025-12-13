@@ -50,6 +50,11 @@ const outboundLaunchCards = [
 
 const gtmTeaserCards = [
   {
+    name: "Upload Status",
+    description: "See which companies have uploaded case study data",
+    href: "/admin/gtm/upload-status",
+  },
+  {
     name: "Table Schema Viewer",
     description: "Explore GTM database table schemas",
     href: "/admin/gtm/schema",
@@ -63,6 +68,11 @@ const gtmTeaserCards = [
     name: "Upload Case Study URLs",
     description: "Import case study URLs for target companies",
     href: "/admin/gtm/upload-case-study-urls",
+  },
+  {
+    name: "Upload Manual Buyers",
+    description: "Import pre-extracted buyer data (testimonials, etc.)",
+    href: "/admin/gtm/upload-manual-buyers",
   },
 ];
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { DBDrivenEnrichmentWorkflow } from "@/types/database";
 
@@ -27,6 +27,14 @@ export default function HQTargetCompaniesPage() {
   const [showEnrichmentMenu, setShowEnrichmentMenu] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Eligibility filter state
+  const [selectedWorkflowFilter, setSelectedWorkflowFilter] = useState<string | null>(null);
+  const [eligibilityCounts, setEligibilityCounts] = useState<Record<string, number>>({});
+  const [loadingEligibility, setLoadingEligibility] = useState(false);
+  const [showOnlyEligible, setShowOnlyEligible] = useState(false);
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set(["GTM Teaser HQ"]));
+  const enrichmentMenuRef = useRef<HTMLDivElement>(null);
 
   const gtmUrl = process.env.NEXT_PUBLIC_GTM_SUPABASE_URL;
   const gtmAnonKey = process.env.NEXT_PUBLIC_GTM_SUPABASE_ANON_KEY;
@@ -57,14 +65,13 @@ export default function HQTargetCompaniesPage() {
 
       setCompanies(companiesData || []);
 
-      // Fetch workflows from Outbound Launch DB (only active GTM Teaser HQ workflows)
+      // Fetch all active workflows from Outbound Launch DB
       if (supabaseUrl && supabaseAnonKey) {
         const outboundSupabase = createClient(supabaseUrl, supabaseAnonKey);
         const { data: workflowsData } = await outboundSupabase
           .from("db_driven_enrichment_workflows")
           .select("*")
-          .eq("status", "active")
-          .eq("category", "GTM Teaser HQ");
+          .eq("status", "active");
         setWorkflows(workflowsData || []);
       }
 
@@ -74,10 +81,84 @@ export default function HQTargetCompaniesPage() {
     fetchData();
   }, [gtmUrl, gtmAnonKey, supabaseUrl, supabaseAnonKey]);
 
-  const sortedCompanies = useMemo(() => {
-    const sorted = [...companies];
+  // Fetch eligibility counts when workflow filter changes
+  const fetchEligibilityCounts = useCallback(async (workflow: DBDrivenEnrichmentWorkflow) => {
+    if (!gtmUrl || !gtmAnonKey) return;
+    if (!workflow.source_table_name || !workflow.source_table_company_fk) {
+      console.warn("Workflow missing source_table_name or source_table_company_fk");
+      return;
+    }
 
-    sorted.sort((a, b) => {
+    setLoadingEligibility(true);
+    const gtmSupabase = createClient(gtmUrl, gtmAnonKey);
+
+    try {
+      // Get all company IDs that have records in the source table
+      const { data, error: fetchError } = await gtmSupabase
+        .from(workflow.source_table_name)
+        .select(workflow.source_table_company_fk);
+
+      if (fetchError) {
+        console.error("Error fetching eligibility:", fetchError);
+        setLoadingEligibility(false);
+        return;
+      }
+
+      // Count records per company
+      const counts: Record<string, number> = {};
+      if (data && Array.isArray(data)) {
+        for (const row of data) {
+          const rowObj = row as unknown as Record<string, unknown>;
+          const companyId = rowObj[workflow.source_table_company_fk as string] as string | undefined;
+          if (companyId) {
+            counts[companyId] = (counts[companyId] || 0) + 1;
+          }
+        }
+      }
+
+      setEligibilityCounts(counts);
+    } catch (err) {
+      console.error("Error fetching eligibility counts:", err);
+    } finally {
+      setLoadingEligibility(false);
+    }
+  }, [gtmUrl, gtmAnonKey]);
+
+  // Trigger eligibility fetch when workflow filter changes
+  useEffect(() => {
+    if (selectedWorkflowFilter) {
+      const workflow = workflows.find(w => w.id === selectedWorkflowFilter);
+      if (workflow) {
+        fetchEligibilityCounts(workflow);
+      }
+    } else {
+      setEligibilityCounts({});
+      setShowOnlyEligible(false);
+    }
+  }, [selectedWorkflowFilter, workflows, fetchEligibilityCounts]);
+
+  // Close enrichment menu when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (enrichmentMenuRef.current && !enrichmentMenuRef.current.contains(event.target as Node)) {
+        setShowEnrichmentMenu(false);
+      }
+    }
+    if (showEnrichmentMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showEnrichmentMenu]);
+
+  const sortedCompanies = useMemo(() => {
+    let filtered = [...companies];
+
+    // Apply eligibility filter if enabled
+    if (showOnlyEligible && selectedWorkflowFilter) {
+      filtered = filtered.filter(c => (eligibilityCounts[c.id] || 0) > 0);
+    }
+
+    filtered.sort((a, b) => {
       const aVal = a[sortField];
       const bVal = b[sortField];
 
@@ -88,8 +169,48 @@ export default function HQTargetCompaniesPage() {
       return sortDirection === "asc" ? comparison : -comparison;
     });
 
-    return sorted;
-  }, [companies, sortField, sortDirection]);
+    return filtered;
+  }, [companies, sortField, sortDirection, showOnlyEligible, selectedWorkflowFilter, eligibilityCounts]);
+
+  // Count eligible companies
+  const eligibleCount = useMemo(() => {
+    if (!selectedWorkflowFilter) return 0;
+    return companies.filter(c => (eligibilityCounts[c.id] || 0) > 0).length;
+  }, [companies, eligibilityCounts, selectedWorkflowFilter]);
+
+  // Get unique categories from workflows
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    workflows.forEach(w => {
+      if (w.category) cats.add(w.category);
+    });
+    return Array.from(cats).sort();
+  }, [workflows]);
+
+  // Filter workflows by selected categories
+  const filteredWorkflows = useMemo(() => {
+    if (selectedCategories.size === 0) return workflows;
+    return workflows.filter(w => w.category && selectedCategories.has(w.category));
+  }, [workflows, selectedCategories]);
+
+  // Toggle category selection
+  const toggleCategory = (category: string) => {
+    const newCategories = new Set(selectedCategories);
+    if (newCategories.has(category)) {
+      newCategories.delete(category);
+    } else {
+      newCategories.add(category);
+    }
+    setSelectedCategories(newCategories);
+    // Clear workflow filter if the selected workflow is no longer visible
+    if (selectedWorkflowFilter) {
+      const workflow = workflows.find(w => w.id === selectedWorkflowFilter);
+      if (workflow && workflow.category && !newCategories.has(workflow.category)) {
+        setSelectedWorkflowFilter(null);
+        setShowOnlyEligible(false);
+      }
+    }
+  };
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -240,13 +361,99 @@ export default function HQTargetCompaniesPage() {
         </span>
       </div>
 
+      {/* Eligibility Filter */}
+      <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+        {/* Category Filter */}
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-600 font-medium">Categories:</span>
+          <div className="flex flex-wrap gap-2">
+            {categories.map((category) => (
+              <button
+                key={category}
+                onClick={() => toggleCategory(category)}
+                className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                  selectedCategories.has(category)
+                    ? "bg-gray-700 text-white border-gray-700"
+                    : "bg-white text-gray-500 border-gray-300 hover:border-gray-400"
+                }`}
+              >
+                {category}
+              </button>
+            ))}
+            {categories.length === 0 && (
+              <span className="text-xs text-gray-400">No categories found</span>
+            )}
+          </div>
+        </div>
+
+        {/* Workflow Filter */}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-gray-600 font-medium">Show Records Eligible For:</span>
+          <div className="flex flex-wrap gap-2">
+            {filteredWorkflows.length === 0 && (
+              <span className="text-xs text-gray-400">No workflows in selected categories</span>
+            )}
+            {filteredWorkflows.map((workflow) => {
+              const isSelected = selectedWorkflowFilter === workflow.id;
+              const workflowEligibleCount = isSelected ? eligibleCount : null;
+
+              return (
+                <button
+                  key={workflow.id}
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedWorkflowFilter(null);
+                      setShowOnlyEligible(false);
+                    } else {
+                      setSelectedWorkflowFilter(workflow.id);
+                    }
+                  }}
+                  className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+                    isSelected
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-600"
+                  }`}
+                >
+                  {workflow.title || workflow.workflow_slug}
+                  {isSelected && workflowEligibleCount !== null && (
+                    <span className="ml-2 px-1.5 py-0.5 bg-blue-500 text-white text-xs rounded">
+                      {workflowEligibleCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+        </div>
+
+          {selectedWorkflowFilter && (
+            <>
+              {loadingEligibility ? (
+                <span className="text-sm text-gray-500 ml-2">Checking...</span>
+              ) : (
+                <label className="flex items-center gap-2 text-sm ml-auto">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyEligible}
+                    onChange={(e) => setShowOnlyEligible(e.target.checked)}
+                    className="h-4 w-4 text-blue-600 border-gray-300 rounded"
+                  />
+                  <span className="text-gray-700">
+                    Hide ineligible ({companies.length - eligibleCount})
+                  </span>
+                </label>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Action Bar */}
       {selectedIds.size > 0 && (
         <div className="mb-4 flex items-center gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
           <span className="text-sm text-blue-800 font-medium">
             {selectedIds.size} selected
           </span>
-          <div className="relative">
+          <div className="relative" ref={enrichmentMenuRef}>
             <button
               onClick={() => setShowEnrichmentMenu(!showEnrichmentMenu)}
               disabled={sending}
@@ -363,6 +570,11 @@ export default function HQTargetCompaniesPage() {
                     Created
                     <SortIcon field="created_at" />
                   </th>
+                  {selectedWorkflowFilter && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Records
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -427,6 +639,21 @@ export default function HQTargetCompaniesPage() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                       {new Date(company.created_at).toLocaleDateString()}
                     </td>
+                    {selectedWorkflowFilter && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        {loadingEligibility ? (
+                          <span className="text-gray-400">...</span>
+                        ) : (eligibilityCounts[company.id] || 0) > 0 ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            {eligibilityCounts[company.id]}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
+                            0
+                          </span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -435,13 +662,6 @@ export default function HQTargetCompaniesPage() {
         </div>
       )}
 
-      {/* Click outside to close menu */}
-      {showEnrichmentMenu && (
-        <div
-          className="fixed inset-0 z-0"
-          onClick={() => setShowEnrichmentMenu(false)}
-        />
-      )}
     </div>
   );
 }

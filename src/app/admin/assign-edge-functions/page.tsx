@@ -17,6 +17,8 @@ interface EnrichmentWorkflow {
   workflow_slug: string;
   dispatcher_function_name: string | null;
   dispatcher_function_url: string | null;
+  receiver_function_name: string | null;
+  receiver_function_url: string | null;
   storage_worker_function_name: string | null;
   storage_worker_function_url: string | null;
   global_logger_function_name: string | null;
@@ -25,7 +27,7 @@ interface EnrichmentWorkflow {
   destination_type: string | null;
 }
 
-type FunctionRole = "dispatcher" | "storage_worker" | "global_logger";
+type FunctionRole = "dispatcher" | "receiver" | "storage_worker" | "global_logger";
 
 export default function ConfigureEdgeFunctionsPage() {
   const [edgeFunctions, setEdgeFunctions] = useState<EdgeFunction[]>([]);
@@ -65,7 +67,7 @@ export default function ConfigureEdgeFunctionsPage() {
         const supabase = createClient(supabaseUrl, supabaseAnonKey);
         const { data: wfData, error: wfError } = await supabase
           .from("db_driven_enrichment_workflows")
-          .select("id, title, workflow_slug, dispatcher_function_name, dispatcher_function_url, storage_worker_function_name, storage_worker_function_url, global_logger_function_name, global_logger_function_url, destination_endpoint_url, destination_type")
+          .select("id, title, workflow_slug, dispatcher_function_name, dispatcher_function_url, receiver_function_name, receiver_function_url, storage_worker_function_name, storage_worker_function_url, global_logger_function_name, global_logger_function_url, destination_endpoint_url, destination_type")
           .order("title");
 
         if (wfError) {
@@ -100,6 +102,7 @@ export default function ConfigureEdgeFunctionsPage() {
 
       const fieldMap: Record<FunctionRole, { name: string; url: string }> = {
         dispatcher: { name: "dispatcher_function_name", url: "dispatcher_function_url" },
+        receiver: { name: "receiver_function_name", url: "receiver_function_url" },
         storage_worker: { name: "storage_worker_function_name", url: "storage_worker_function_url" },
         global_logger: { name: "global_logger_function_name", url: "global_logger_function_url" },
       };
@@ -132,6 +135,7 @@ export default function ConfigureEdgeFunctionsPage() {
   const getRoleLabel = (role: FunctionRole): string => {
     switch (role) {
       case "dispatcher": return "Dispatcher";
+      case "receiver": return "Receiver (Callback)";
       case "storage_worker": return "Storage Worker";
       case "global_logger": return "Global Logger";
     }
@@ -259,7 +263,7 @@ export default function ConfigureEdgeFunctionsPage() {
                   {/* Destination Endpoint (Read Only) */}
                   <div className="bg-white border border-gray-200 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">
-                      <label className="text-sm font-medium text-gray-700">2. Destination</label>
+                      <label className="text-sm font-medium text-gray-700">2. Destination (External)</label>
                       {selectedWorkflow.destination_endpoint_url && (
                         <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
                           {selectedWorkflow.destination_type || "URL"}
@@ -277,13 +281,18 @@ export default function ConfigureEdgeFunctionsPage() {
                   </div>
 
                   <RoleCard
+                    role="receiver"
+                    label="3. Receiver (Callback)"
+                    currentValue={selectedWorkflow.receiver_function_name}
+                  />
+                  <RoleCard
                     role="storage_worker"
-                    label="3. Storage Worker"
+                    label="4. Storage Worker"
                     currentValue={selectedWorkflow.storage_worker_function_name}
                   />
                   <RoleCard
                     role="global_logger"
-                    label="4. Global Logger"
+                    label="5. Global Logger"
                     currentValue={selectedWorkflow.global_logger_function_name}
                   />
                 </div>

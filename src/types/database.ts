@@ -166,6 +166,7 @@ export interface DBDrivenEnrichmentWorkflow {
   title: string;
   workflow_slug: string;
   description: string | null;
+  category: string | null;
   request_type: string | null;
   destination_type: string | null;
   destination_endpoint_url: string | null;
@@ -173,6 +174,10 @@ export interface DBDrivenEnrichmentWorkflow {
   receiver_function_name: string;
   dispatcher_function_url: string;
   receiver_function_url: string;
+  storage_worker_function_url: string | null;
+  source_table_name: string | null;
+  source_table_company_fk: string | null;
+  source_table_select_columns: string | null;
   status: string;
   created_at: string;
   updated_at: string;

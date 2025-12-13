@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, DragEvent } from "react";
+import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
 interface TargetCompany {
@@ -10,13 +11,15 @@ interface TargetCompany {
 }
 
 const DB_FIELDS = [
-  { key: "case_study_url", label: "case_study_url", required: true },
-  { key: "customer_name", label: "customer_name", required: false },
+  { key: "extracted_buyer_company", label: "Buyer Company", required: false },
+  { key: "extracted_contact_name", label: "Contact Name", required: false },
+  { key: "extracted_contact_role", label: "Contact Role", required: false },
+  { key: "case_study_url", label: "Source URL (optional)", required: false },
 ] as const;
 
 type FieldMapping = Record<string, string>;
 
-export default function UploadCaseStudyURLsPage() {
+export default function UploadManualBuyersPage() {
   const [file, setFile] = useState<File | null>(null);
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [preview, setPreview] = useState<Record<string, string>[]>([]);
@@ -89,10 +92,14 @@ export default function UploadCaseStudyURLsPage() {
       const autoMapping: FieldMapping = {};
       headers.forEach((header) => {
         const lowerHeader = header.toLowerCase();
-        if (lowerHeader.includes("url") || lowerHeader.includes("link")) {
+        if (lowerHeader.includes("buyer") || lowerHeader.includes("company")) {
+          if (!autoMapping["extracted_buyer_company"]) autoMapping["extracted_buyer_company"] = header;
+        } else if (lowerHeader.includes("contact") || lowerHeader.includes("name")) {
+          if (!autoMapping["extracted_contact_name"]) autoMapping["extracted_contact_name"] = header;
+        } else if (lowerHeader.includes("role") || lowerHeader.includes("title") || lowerHeader.includes("position")) {
+          if (!autoMapping["extracted_contact_role"]) autoMapping["extracted_contact_role"] = header;
+        } else if (lowerHeader.includes("url") || lowerHeader.includes("link")) {
           if (!autoMapping["case_study_url"]) autoMapping["case_study_url"] = header;
-        } else if (lowerHeader.includes("customer") || lowerHeader.includes("client") || lowerHeader.includes("name")) {
-          if (!autoMapping["customer_name"]) autoMapping["customer_name"] = header;
         }
       });
       setFieldMapping(autoMapping);
@@ -146,12 +153,14 @@ export default function UploadCaseStudyURLsPage() {
   const handleUpload = async () => {
     if (!file || !gtmUrl || !gtmAnonKey || !selectedCompanyId) return;
 
-    // Validate required fields are mapped
-    const missingRequired = DB_FIELDS.filter((f) => f.required && !fieldMapping[f.key]);
-    if (missingRequired.length > 0) {
+    // At least one buyer field should be mapped
+    const hasBuyerField = fieldMapping["extracted_buyer_company"] ||
+                          fieldMapping["extracted_contact_name"] ||
+                          fieldMapping["extracted_contact_role"];
+    if (!hasBuyerField) {
       setResult({
         success: false,
-        message: `Please map required fields: ${missingRequired.map((f) => f.label).join(", ")}`,
+        message: "Please map at least one buyer field (Buyer Company, Contact Name, or Contact Role)",
       });
       return;
     }
@@ -179,20 +188,32 @@ export default function UploadCaseStudyURLsPage() {
       const records = lines.slice(1).map((line) => {
         const values = parseCSVLine(line);
 
-        const urlIdx = indexMap["case_study_url"];
-        const customerIdx = indexMap["customer_name"];
+        const getValue = (field: string) => {
+          const idx = indexMap[field];
+          return idx !== undefined ? values[idx]?.trim() || null : null;
+        };
 
         return {
           hq_target_company_id: selectedCompanyId,
+          hq_target_company_name: selectedCompany?.company_name || null,
           hq_target_company_domain: selectedCompany?.company_domain || null,
-          case_study_url: urlIdx !== undefined ? values[urlIdx]?.trim() || null : null,
-          customer_name: customerIdx !== undefined ? values[customerIdx]?.trim() || null : null,
-          status: "pending",
+          case_study_url: getValue("case_study_url"),
+          extracted_buyer_company: getValue("extracted_buyer_company"),
+          extracted_contact_name: getValue("extracted_contact_name"),
+          extracted_contact_role: getValue("extracted_contact_role"),
+          source: "manual",
+          enriched_at: new Date().toISOString(),
         };
-      }).filter((r) => r.case_study_url);
+      }).filter((r) => r.extracted_buyer_company || r.extracted_contact_name || r.extracted_contact_role);
+
+      if (records.length === 0) {
+        setResult({ success: false, message: "No valid records found in CSV" });
+        setUploading(false);
+        return;
+      }
 
       const { data, error } = await supabase
-        .from("case_study_urls")
+        .from("extracted_buyer_details_from_case_study_urls")
         .insert(records)
         .select();
 
@@ -201,7 +222,7 @@ export default function UploadCaseStudyURLsPage() {
       } else {
         setResult({
           success: true,
-          message: `Successfully uploaded ${data?.length || records.length} case study URLs for ${selectedCompany?.company_name || selectedCompany?.company_domain}`,
+          message: `Successfully uploaded ${data?.length || records.length} buyer records for ${selectedCompany?.company_name || selectedCompany?.company_domain}`,
         });
         setFile(null);
         setPreview([]);
@@ -219,14 +240,15 @@ export default function UploadCaseStudyURLsPage() {
     }
   };
 
-  const canUpload =
-    selectedCompanyId &&
-    DB_FIELDS.filter((f) => f.required).every((f) => fieldMapping[f.key]);
+  const hasBuyerField = fieldMapping["extracted_buyer_company"] ||
+                        fieldMapping["extracted_contact_name"] ||
+                        fieldMapping["extracted_contact_role"];
+  const canUpload = selectedCompanyId && hasBuyerField;
 
   if (!gtmUrl || !gtmAnonKey) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Upload Case Study URLs</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Upload Manual Buyer Details</h1>
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
           <p className="text-yellow-800">
             GTM Teaser DB not configured. Set NEXT_PUBLIC_GTM_SUPABASE_URL and NEXT_PUBLIC_GTM_SUPABASE_ANON_KEY.
@@ -238,8 +260,16 @@ export default function UploadCaseStudyURLsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-2">Upload Case Study URLs</h1>
-      <p className="text-gray-600 mb-6">Import case study URLs for a target company into the GTM Teaser Demo DB</p>
+      <div className="mb-6">
+        <Link href="/admin" className="text-sm text-gray-600 hover:text-gray-900">
+          ← Back to Admin
+        </Link>
+      </div>
+
+      <h1 className="text-2xl font-bold text-gray-900 mb-2">Upload Manual Buyer Details</h1>
+      <p className="text-gray-600 mb-6">
+        Import pre-extracted buyer data (e.g., from testimonial cards) directly into the enriched buyers table
+      </p>
 
       <div className="bg-white rounded-lg shadow border border-gray-200 p-6">
         <div className="mb-6">
@@ -298,12 +328,12 @@ export default function UploadCaseStudyURLsPage() {
         {csvHeaders.length > 0 && (
           <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
             <h3 className="text-sm font-semibold text-gray-800 mb-3">Map CSV Columns to Database Fields</h3>
+            <p className="text-xs text-gray-500 mb-4">Map at least one buyer field</p>
             <div className="space-y-3">
               {DB_FIELDS.map((field) => (
                 <div key={field.key} className="flex items-center gap-4">
-                  <label className="w-40 text-sm text-gray-700">
+                  <label className="w-48 text-sm text-gray-700">
                     {field.label}
-                    {field.required && <span className="text-red-500 ml-1">*</span>}
                   </label>
                   <select
                     value={fieldMapping[field.key] || ""}
@@ -375,7 +405,7 @@ export default function UploadCaseStudyURLsPage() {
           <p className="mt-2 text-sm text-amber-600">
             {!selectedCompanyId
               ? "Please select a target company."
-              : "Please map all required fields before uploading."}
+              : "Please map at least one buyer field."}
           </p>
         )}
 
