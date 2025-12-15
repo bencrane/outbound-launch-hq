@@ -32,6 +32,11 @@ const outboundLaunchCards = [
     href: "/admin/db-enrichment-workflows",
   },
   {
+    name: "Manage Workflows (Full Editor)",
+    description: "View and edit all workflow fields with inline editing",
+    href: "/admin/manage-workflows",
+  },
+  {
     name: "View + Configure Enrichment Workflows",
     description: "View and edit all enrichment workflows",
     href: "/admin/view-enrichment-workflows",
@@ -42,7 +47,12 @@ const outboundLaunchCards = [
     href: "/admin/data-coverage",
   },
   {
-    name: "Company Enrichment Status",
+    name: "Pipeline Status",
+    description: "View company enrichment pipeline completion status",
+    href: "/admin/pipeline-status",
+  },
+  {
+    name: "Company Enrichment Status (Old)",
     description: "View which workflows a company has been through",
     href: "/admin/company-enrichment-status",
   },
