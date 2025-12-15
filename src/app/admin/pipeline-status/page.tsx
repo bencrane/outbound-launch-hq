@@ -52,8 +52,9 @@ export default function PipelineStatusPage() {
         gtm.from("hq_target_companies").select("id, company_name, company_domain").order("company_name"),
         hq.from("db_driven_enrichment_workflows")
           .select("id, title, workflow_slug, overall_step_number, phase_type, provider, status")
-          .eq("status", "active")
-          .order("overall_step_number", { ascending: true, nullsFirst: false }),
+          .not("overall_step_number", "is", null) // Only pipeline steps (those with step numbers)
+          .neq("status", "deprecated") // Exclude deprecated workflows
+          .order("overall_step_number", { ascending: true }),
       ]);
 
       setCompanies(companiesRes.data || []);
@@ -189,6 +190,19 @@ export default function PipelineStatusPage() {
                       {workflow.phase_type} | {workflow.provider}
                     </div>
                   </div>
+
+                  {/* Status Badge */}
+                  <span
+                    className={`flex-shrink-0 inline-flex px-2 py-0.5 text-xs font-medium rounded ${
+                      workflow.status === "active"
+                        ? "bg-green-100 text-green-800"
+                        : workflow.status === "deprecated"
+                        ? "bg-red-100 text-red-700"
+                        : "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {workflow.status}
+                  </span>
                 </div>
               );
             })

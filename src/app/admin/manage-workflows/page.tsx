@@ -94,6 +94,11 @@ export default function ManageWorkflowsPage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+  // Inline status editing
+  const [editingStatusId, setEditingStatusId] = useState<string | null>(null);
+  const [editingStatusValue, setEditingStatusValue] = useState<string>("");
+  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
+
   const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
@@ -110,10 +115,10 @@ export default function ManageWorkflowsPage() {
         const { data, error: fetchError } = await supabase
           .from("db_driven_enrichment_workflows")
           .select("*")
-          .order("status", { ascending: true }) // active before deprecated
-          .order("overall_step_number", { ascending: true, nullsFirst: false })
+          .order("overall_step_number", { ascending: true, nullsFirst: false }) // numbered steps first, nulls at bottom
           .order("phase_number", { ascending: true, nullsFirst: false })
-          .order("phase_step_number", { ascending: true, nullsFirst: false });
+          .order("phase_step_number", { ascending: true, nullsFirst: false })
+          .order("status", { ascending: true }); // tiebreaker: active before deprecated/inactive
 
         if (fetchError) {
           setError(fetchError.message);
@@ -221,6 +226,38 @@ export default function ManageWorkflowsPage() {
 
   const hasChanges = Object.keys(editedValues).length > 0;
 
+  // Save status inline
+  const handleSaveStatus = async (workflowId: string) => {
+    if (!supabaseUrl || !supabaseAnonKey) return;
+
+    setSavingStatusId(workflowId);
+
+    try {
+      const supabase = createClient(supabaseUrl, supabaseAnonKey);
+      const { error: updateError } = await supabase
+        .from("db_driven_enrichment_workflows")
+        .update({ status: editingStatusValue, updated_at: new Date().toISOString() })
+        .eq("id", workflowId);
+
+      if (!updateError) {
+        // Update local state
+        setWorkflows((prev) =>
+          prev.map((w) =>
+            w.id === workflowId ? { ...w, status: editingStatusValue } : w
+          )
+        );
+        // Also update editingWorkflow if it's the same one
+        if (editingWorkflow?.id === workflowId) {
+          setEditingWorkflow({ ...editingWorkflow, status: editingStatusValue });
+        }
+      }
+    } finally {
+      setSavingStatusId(null);
+      setEditingStatusId(null);
+      setEditingStatusValue("");
+    }
+  };
+
   if (loading) {
     return (
       <div>
@@ -259,6 +296,7 @@ export default function ManageWorkflowsPage() {
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Slug</th>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Phase</th>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-24"></th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -292,6 +330,61 @@ export default function ManageWorkflowsPage() {
                     >
                       {workflow.status}
                     </span>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    {editingStatusId === workflow.id ? (
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={editingStatusValue}
+                          onChange={(e) => setEditingStatusValue(e.target.value)}
+                          className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                          autoFocus
+                        >
+                          <option value="active">active</option>
+                          <option value="inactive">inactive</option>
+                          <option value="deprecated">deprecated</option>
+                        </select>
+                        <button
+                          onClick={() => handleSaveStatus(workflow.id)}
+                          disabled={savingStatusId === workflow.id}
+                          className="p-1 text-green-600 hover:text-green-800 disabled:opacity-50"
+                          title="Save"
+                        >
+                          {savingStatusId === workflow.id ? (
+                            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => { setEditingStatusId(null); setEditingStatusValue(""); }}
+                          className="p-1 text-gray-400 hover:text-gray-600"
+                          title="Cancel"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setEditingStatusId(workflow.id);
+                          setEditingStatusValue(workflow.status || "inactive");
+                        }}
+                        className="p-1 text-gray-400 hover:text-blue-600"
+                        title="Edit status"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
