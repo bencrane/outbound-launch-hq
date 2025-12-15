@@ -13,6 +13,18 @@ interface HQTargetCompany {
   created_at: string;
 }
 
+interface CompanyWorkflowStatus {
+  company_id: string;
+  last_completed_step: number;
+  workflow_slug: string | null;
+}
+
+interface PipelineWorkflow {
+  overall_step_number: number;
+  title: string | null;
+  workflow_slug: string;
+}
+
 type SortField = "company_name" | "company_domain" | "created_at";
 type SortDirection = "asc" | "desc";
 
@@ -35,6 +47,11 @@ export default function HQTargetCompaniesPage() {
   const [showOnlyEligible, setShowOnlyEligible] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set(["GTM Teaser HQ"]));
   const enrichmentMenuRef = useRef<HTMLDivElement>(null);
+
+  // Pipeline step filter state
+  const [companyStatuses, setCompanyStatuses] = useState<CompanyWorkflowStatus[]>([]);
+  const [pipelineSteps, setPipelineSteps] = useState<PipelineWorkflow[]>([]);
+  const [selectedStepFilter, setSelectedStepFilter] = useState<number | null>(null); // null = show all, 0 = no steps completed
 
   const gtmUrl = process.env.NEXT_PUBLIC_GTM_SUPABASE_URL;
   const gtmAnonKey = process.env.NEXT_PUBLIC_GTM_SUPABASE_ANON_KEY;
@@ -73,6 +90,21 @@ export default function HQTargetCompaniesPage() {
           .select("*")
           .eq("status", "active");
         setWorkflows(workflowsData || []);
+
+        // Fetch pipeline steps (workflows with step numbers)
+        const { data: stepsData } = await outboundSupabase
+          .from("db_driven_enrichment_workflows")
+          .select("overall_step_number, title, workflow_slug")
+          .not("overall_step_number", "is", null)
+          .neq("status", "deprecated")
+          .order("overall_step_number", { ascending: true });
+        setPipelineSteps((stepsData || []) as PipelineWorkflow[]);
+
+        // Fetch company workflow statuses
+        const { data: statusData } = await outboundSupabase
+          .from("company_workflow_status")
+          .select("company_id, last_completed_step, workflow_slug");
+        setCompanyStatuses((statusData || []) as CompanyWorkflowStatus[]);
       }
 
       setLoading(false);
@@ -150,8 +182,28 @@ export default function HQTargetCompaniesPage() {
     }
   }, [showEnrichmentMenu]);
 
+  // Map company_id to last_completed_step for quick lookup
+  const companyStepMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const status of companyStatuses) {
+      map.set(status.company_id, status.last_completed_step);
+    }
+    return map;
+  }, [companyStatuses]);
+
   const sortedCompanies = useMemo(() => {
     let filtered = [...companies];
+
+    // Apply pipeline step filter
+    if (selectedStepFilter !== null) {
+      if (selectedStepFilter === 0) {
+        // Show companies with NO completed steps
+        filtered = filtered.filter(c => !companyStepMap.has(c.id));
+      } else {
+        // Show companies where last_completed_step equals the selected step
+        filtered = filtered.filter(c => companyStepMap.get(c.id) === selectedStepFilter);
+      }
+    }
 
     // Apply eligibility filter if enabled
     if (showOnlyEligible && selectedWorkflowFilter) {
@@ -170,7 +222,7 @@ export default function HQTargetCompaniesPage() {
     });
 
     return filtered;
-  }, [companies, sortField, sortDirection, showOnlyEligible, selectedWorkflowFilter, eligibilityCounts]);
+  }, [companies, sortField, sortDirection, showOnlyEligible, selectedWorkflowFilter, eligibilityCounts, selectedStepFilter, companyStepMap]);
 
   // Count eligible companies
   const eligibleCount = useMemo(() => {
@@ -240,13 +292,8 @@ export default function HQTargetCompaniesPage() {
   };
 
   const handleSendToEnrichment = async (workflow: DBDrivenEnrichmentWorkflow) => {
-    const dispatcherUrl = workflow.dispatcher_function_url;
-
-    if (!dispatcherUrl) {
-      setSendResult({ success: false, message: "No dispatcher function URL configured for this workflow" });
-      setShowEnrichmentMenu(false);
-      return;
-    }
+    // Master orchestrator URL - all workflows route through this single endpoint
+    const masterOrchestratorUrl = "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_orchestrator_v1";
 
     const selectedCompanies = companies.filter((c) => selectedIds.has(c.id));
 
@@ -255,7 +302,7 @@ export default function HQTargetCompaniesPage() {
     setSendResult(null);
 
     try {
-      const response = await fetch(dispatcherUrl, {
+      const response = await fetch(masterOrchestratorUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -266,23 +313,18 @@ export default function HQTargetCompaniesPage() {
             company_id: c.id,
             company_name: c.company_name,
             company_domain: c.company_domain,
-            company_linkedin_url: c.company_linkedin_url,
           })),
           workflow: {
             id: workflow.id,
-            title: workflow.title,
-            workflow_slug: workflow.workflow_slug,
-            destination_type: workflow.destination_type,
-            destination_endpoint_url: workflow.destination_endpoint_url,
-            receiver_function_url: workflow.receiver_function_url,
           },
         }),
       });
 
       if (response.ok) {
+        const result = await response.json();
         setSendResult({
           success: true,
-          message: `Sent ${selectedCompanies.length} companies to "${workflow.title}" via dispatcher`
+          message: `Dispatched ${result.success_count || 0} of ${result.records_found || 0} records to "${workflow.title}"\n\nSource: ${result.source_table || "N/A"}`
         });
         setSelectedIds(new Set());
       } else {
@@ -296,7 +338,7 @@ export default function HQTargetCompaniesPage() {
             errorDetails += `\n\nResponse: ${errorText}`;
           }
         }
-        errorDetails += `\n\nURL: ${dispatcherUrl}`;
+        errorDetails += `\n\nURL: ${masterOrchestratorUrl}`;
         setSendResult({ success: false, message: errorDetails });
       }
     } catch (err) {
@@ -304,7 +346,7 @@ export default function HQTargetCompaniesPage() {
       if (err instanceof Error) {
         errorMessage = err.message;
         if (err.name === "TypeError" && err.message === "Load failed") {
-          errorMessage = `Network error: Unable to reach the dispatcher function.\n\nPossible causes:\n• The edge function may not be deployed\n• CORS may be blocking the request\n• The function URL may be incorrect\n\nURL: ${dispatcherUrl}`;
+          errorMessage = `Network error: Unable to reach the master orchestrator.\n\nPossible causes:\n• The edge function may not be deployed\n• CORS may be blocking the request\n\nURL: ${masterOrchestratorUrl}`;
         } else if (err.stack) {
           errorMessage += `\n\nStack trace:\n${err.stack}`;
         }
@@ -332,7 +374,7 @@ export default function HQTargetCompaniesPage() {
   if (loading) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Enrichment Eligible Companies</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">End-to-End GTM Enrichment</h1>
         <p className="text-gray-600">Loading...</p>
       </div>
     );
@@ -341,7 +383,7 @@ export default function HQTargetCompaniesPage() {
   if (error) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Enrichment Eligible Companies</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">End-to-End GTM Enrichment</h1>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800">{error}</p>
         </div>
@@ -353,12 +395,71 @@ export default function HQTargetCompaniesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Enrichment Eligible Companies</h1>
-          <p className="text-sm text-gray-500 mt-1">Companies ready for case study enrichment</p>
+          <h1 className="text-2xl font-bold text-gray-900">End-to-End GTM Enrichment</h1>
+          <p className="text-sm text-gray-500 mt-1">Filter by pipeline step, select companies, send to next workflow</p>
         </div>
         <span className="text-sm text-gray-500">
           {companies.length} record{companies.length !== 1 ? "s" : ""}
         </span>
+      </div>
+
+      {/* Pipeline Step Filter */}
+      <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-blue-800 font-medium">Last Completed Step:</span>
+
+          {/* All companies button */}
+          <button
+            onClick={() => setSelectedStepFilter(null)}
+            className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+              selectedStepFilter === null
+                ? "bg-blue-600 text-white border-blue-600"
+                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
+            }`}
+          >
+            All
+          </button>
+
+          {/* No steps completed */}
+          <button
+            onClick={() => setSelectedStepFilter(0)}
+            className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+              selectedStepFilter === 0
+                ? "bg-blue-600 text-white border-blue-600"
+                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
+            }`}
+          >
+            Ready for Step 1
+            <span className="ml-1.5 text-xs opacity-75">
+              ({companies.filter(c => !companyStepMap.has(c.id)).length})
+            </span>
+          </button>
+
+          {/* Step pills */}
+          {pipelineSteps.map((step) => {
+            const count = companies.filter(c => companyStepMap.get(c.id) === step.overall_step_number).length;
+            return (
+              <button
+                key={step.overall_step_number}
+                onClick={() => setSelectedStepFilter(step.overall_step_number)}
+                className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+                  selectedStepFilter === step.overall_step_number
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
+                }`}
+              >
+                Step {step.overall_step_number}: {step.title || step.workflow_slug}
+                <span className="ml-1.5 text-xs opacity-75">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {selectedStepFilter !== null && selectedStepFilter > 0 && (
+          <p className="text-xs text-blue-700 mt-2">
+            Showing companies ready for Step {selectedStepFilter + 1}
+          </p>
+        )}
       </div>
 
       {/* Eligibility Filter */}

@@ -1,75 +1,57 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+/**
+ * GENERIC ZENROWS SCRAPER v1
+ *
+ * This edge function scrapes a URL using the ZenRows API.
+ * It constructs the URL from company_domain in the payload.
+ *
+ * Expected payload fields:
+ * - company_domain: The domain to scrape (e.g., "securitypalhq.com")
+ * - workflow_id: For tracking
+ * - workflow_slug: For tracking
+ * - receiver_function_url: Where to send the scraped data
+ * - hq_target_company_id: Company ID for storage tracking
+ *
+ * The scraper:
+ * 1. Constructs URL as https://{company_domain}
+ * 2. Calls ZenRows API to scrape the page
+ * 3. Sends scraped HTML + original payload to receiver
+ */
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    console.log("=== GENERIC ZENROWS SCRAPER ===");
+    console.log("=== GENERIC ZENROWS SCRAPER v1 ===");
 
-    // Parse incoming payload (pass-through from dispatcher)
+    // Parse incoming payload (pass-through from orchestrator)
     const payload = await req.json();
-    const workflowId = payload.workflow_id;
 
-    if (!workflowId) {
-      return new Response(
-        JSON.stringify({ error: "workflow_id is required in payload" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    console.log("Received payload keys:", Object.keys(payload));
+    console.log("company_domain:", payload.company_domain);
+    console.log("workflow_slug:", payload.workflow_slug);
 
-    console.log("Workflow ID:", workflowId);
-
-    // Look up workflow config to know how to scrape
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
-    const { data: config, error: configError } = await supabase
-      .from("db_driven_enrichment_workflows")
-      .select("scrape_url_field, scrape_url_template, scraped_html_field, receiver_function_url")
-      .eq("id", workflowId)
-      .single();
-
-    if (configError || !config) {
-      console.error("Config lookup error:", configError);
-      return new Response(
-        JSON.stringify({ error: "Failed to load workflow config", details: configError?.message }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Determine URL to scrape from config
-    let urlToScrape: string | null = null;
-
-    if (config.scrape_url_template) {
-      // Template like "https://{company_domain}" - replace placeholders with payload values
-      urlToScrape = config.scrape_url_template.replace(/\{(\w+)\}/g, (_, key) => {
-        return payload[key] || "";
-      });
-    } else if (config.scrape_url_field && payload[config.scrape_url_field]) {
-      // Direct field reference
-      urlToScrape = payload[config.scrape_url_field];
-    }
-
-    if (!urlToScrape) {
+    // Get company_domain to construct URL
+    const companyDomain = payload.company_domain;
+    if (!companyDomain) {
       return new Response(
         JSON.stringify({
-          error: "Could not determine URL to scrape",
-          hint: "Configure scrape_url_template or scrape_url_field in workflow config",
-          config: { scrape_url_field: config.scrape_url_field, scrape_url_template: config.scrape_url_template }
+          error: "company_domain is required in payload",
+          received_keys: Object.keys(payload)
         }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    // Construct URL to scrape (homepage)
+    const urlToScrape = `https://${companyDomain}`;
     console.log("URL to scrape:", urlToScrape);
 
     // Get Zenrows API key
@@ -106,27 +88,38 @@ serve(async (req) => {
     console.log("Scraped HTML length:", scrapedHtml.length);
 
     // Build receiver payload - pass through everything + add scraped data
-    const scrapedHtmlField = config.scraped_html_field || "scraped_html";
     const receiverPayload = {
       ...payload,  // Pass through all original data
-      [scrapedHtmlField]: scrapedHtml,
+      scraped_html: scrapedHtml,
       scraped_url: urlToScrape,
       scraped_at: new Date().toISOString(),
     };
 
     // Send to receiver
-    const receiverUrl = config.receiver_function_url || payload.receiver_function_url;
+    const receiverUrl = payload.receiver_function_url;
     if (!receiverUrl) {
       return new Response(
-        JSON.stringify({ error: "No receiver_function_url configured" }),
+        JSON.stringify({
+          error: "No receiver_function_url in payload",
+          hint: "Orchestrator should include receiver_function_url from workflow config"
+        }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     console.log("Sending to receiver:", receiverUrl);
+
+    // Add auth for Supabase functions
+    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const isSupabaseFunction = receiverUrl.includes("supabase.co/functions/");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (isSupabaseFunction && supabaseKey) {
+      headers["Authorization"] = `Bearer ${supabaseKey}`;
+    }
+
     const receiverResponse = await fetch(receiverUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(receiverPayload),
     });
 

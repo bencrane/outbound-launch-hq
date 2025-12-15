@@ -414,42 +414,70 @@ serve(async (req) => {
     }
 
     // =========================================================================
-    // STEP 9: Continue pipeline - call master_orchestrator for next step
+    // STEP 8b: Update company_workflow_status (track last completed step)
     // =========================================================================
     if (config.overall_step_number !== null && payload.hq_target_company_id) {
-      console.log(`Continuing pipeline after step ${config.overall_step_number}...`);
+      console.log(`Updating company_workflow_status for company ${payload.hq_target_company_id}, step ${config.overall_step_number}`);
 
-      const masterOrchestratorUrl = `${supabaseUrl}/functions/v1/master_orchestrator_v1`;
-      try {
-        const continueResponse = await fetch(masterOrchestratorUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${Deno.env.get("SUPABASE_ANON_KEY") || ""}`,
-          },
-          body: JSON.stringify({
-            companies: [{
-              company_id: payload.hq_target_company_id,
-              company_name: payload.hq_target_company_name || null,
-              company_domain: payload.hq_target_company_domain || null,
-            }],
+      // Upsert: only update if this step is greater than existing last_completed_step
+      const { error: statusError } = await supabase
+        .from("company_workflow_status")
+        .upsert(
+          {
+            company_id: payload.hq_target_company_id,
             last_completed_step: config.overall_step_number,
-          }),
-        });
+            workflow_id: config.id,
+            workflow_slug: config.workflow_slug,
+            completed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "company_id",
+            ignoreDuplicates: false,
+          }
+        );
 
-        if (continueResponse.ok) {
-          const continueResult = await continueResponse.json();
-          console.log("Pipeline continuation triggered:", continueResult.message || "success");
-        } else {
-          console.error("Pipeline continuation failed:", await continueResponse.text());
-        }
-      } catch (continueErr) {
-        console.error("Error calling master_orchestrator:", continueErr);
-        // Don't fail the storage - the data is already saved
+      if (statusError) {
+        console.error("Failed to update company_workflow_status:", statusError);
+        // Don't fail - status tracking is informational
+      } else {
+        console.log("Company workflow status updated");
       }
-    } else {
-      console.log("Skipping pipeline continuation - no step number or company ID");
     }
+
+    // =========================================================================
+    // STEP 9: Continue pipeline (DISABLED - manual advancement for now)
+    // When ready for auto-advance, uncomment this block
+    // =========================================================================
+    // if (config.overall_step_number !== null && payload.hq_target_company_id) {
+    //   console.log(`Continuing pipeline after step ${config.overall_step_number}...`);
+    //   const masterOrchestratorUrl = `${supabaseUrl}/functions/v1/master_orchestrator_v1`;
+    //   try {
+    //     const continueResponse = await fetch(masterOrchestratorUrl, {
+    //       method: "POST",
+    //       headers: {
+    //         "Content-Type": "application/json",
+    //         "Authorization": `Bearer ${Deno.env.get("SUPABASE_ANON_KEY") || ""}`,
+    //       },
+    //       body: JSON.stringify({
+    //         companies: [{
+    //           company_id: payload.hq_target_company_id,
+    //           company_name: payload.hq_target_company_name || null,
+    //           company_domain: payload.hq_target_company_domain || null,
+    //         }],
+    //         last_completed_step: config.overall_step_number,
+    //       }),
+    //     });
+    //     if (continueResponse.ok) {
+    //       const continueResult = await continueResponse.json();
+    //       console.log("Pipeline continuation triggered:", continueResult.message || "success");
+    //     } else {
+    //       console.error("Pipeline continuation failed:", await continueResponse.text());
+    //     }
+    //   } catch (continueErr) {
+    //     console.error("Error calling master_orchestrator:", continueErr);
+    //   }
+    // }
 
     // =========================================================================
     // STEP 10: Return success response

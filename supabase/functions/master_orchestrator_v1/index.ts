@@ -38,6 +38,15 @@ interface WorkflowConfig {
   source_table_select_columns: string | null;
 }
 
+interface DataGetterResponse {
+  success: boolean;
+  data_type: "source_records" | "company_data";
+  workflow_slug: string;
+  source_table: string | null;
+  records: Record<string, unknown>[];
+  record_count: number;
+}
+
 // Rate limit: 100ms between requests = max 10 requests/sec (Clay's limit)
 const DELAY_BETWEEN_REQUESTS_MS = 100;
 
@@ -194,12 +203,9 @@ serve(async (req) => {
     console.log("Destination Type:", config.destination_type);
 
     // =========================================================================
-    // STEP 2: Route based on workflow configuration
+    // STEP 2: Check if destination is configured
     // =========================================================================
-
-    // Check if destination is configured
     if (!config.destination_endpoint_url) {
-      // No destination - this step just logs/acknowledges (placeholder for future)
       console.log("=== NO DESTINATION CONFIGURED ===");
       console.log("Step", config.overall_step_number, "has no destination_endpoint_url");
 
@@ -217,200 +223,154 @@ serve(async (req) => {
       );
     }
 
-    // Check if this workflow needs source data from a table
-    if (config.source_table_name && config.source_table_company_fk) {
-      // =========================================================================
-      // STEP 3a: Fetch source records from GTM Teaser DB
-      // =========================================================================
-      console.log("=== FETCHING SOURCE RECORDS ===");
+    // =========================================================================
+    // STEP 3: Call master_db_data_getter to fetch source data
+    // =========================================================================
+    console.log("=== CALLING MASTER DB DATA GETTER ===");
 
-      const gtmUrl = Deno.env.get("GTM_SUPABASE_URL");
-      const gtmKey = Deno.env.get("GTM_SUPABASE_SERVICE_ROLE_KEY");
+    const dataGetterUrl = `${supabaseUrl}/functions/v1/master_db_data_getter_v1`;
+    console.log("Data getter URL:", dataGetterUrl);
 
-      if (!gtmUrl || !gtmKey) {
-        return new Response(
-          JSON.stringify({ error: "GTM Teaser DB credentials not configured" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
+    const dataGetterPayload = {
+      companies: companies,
+      workflow_config: {
+        id: config.id,
+        workflow_slug: config.workflow_slug,
+        title: config.title,
+        overall_step_number: config.overall_step_number,
+        source_table_name: config.source_table_name,
+        source_table_company_fk: config.source_table_company_fk,
+        source_table_select_columns: config.source_table_select_columns,
+      },
+    };
 
-      const gtmSupabase = createClient(gtmUrl, gtmKey);
-      const companyIds = companies.map((c) => c.company_id);
-      const selectColumns = config.source_table_select_columns || "*";
+    const dataGetterResponse = await fetch(dataGetterUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey}`,
+      },
+      body: JSON.stringify(dataGetterPayload),
+    });
 
-      console.log("Source table:", config.source_table_name);
-      console.log("Company FK:", config.source_table_company_fk);
-      console.log("Select columns:", selectColumns);
-
-      const { data: sourceRecords, error: sourceError } = await gtmSupabase
-        .from(config.source_table_name)
-        .select(selectColumns)
-        .in(config.source_table_company_fk, companyIds);
-
-      if (sourceError) {
-        console.error("Source query error:", sourceError);
-        return new Response(
-          JSON.stringify({
-            error: `Failed to fetch from ${config.source_table_name}: ${sourceError.message}`,
-            source_table: config.source_table_name,
-            company_fk: config.source_table_company_fk
-          }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (!sourceRecords || sourceRecords.length === 0) {
-        return new Response(
-          JSON.stringify({
-            message: `No records found in ${config.source_table_name} for selected companies`,
-            workflow_slug: config.workflow_slug,
-            companies_selected: companies.length,
-            records_found: 0
-          }),
-          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      console.log("Source records found:", sourceRecords.length);
-
-      // =========================================================================
-      // STEP 4: Send each record to destination (Clay) with rate limiting
-      // =========================================================================
-      const results: { id: string; success: boolean; error?: string }[] = [];
-
-      for (let i = 0; i < sourceRecords.length; i++) {
-        const record = sourceRecords[i] as Record<string, unknown>;
-
-        try {
-          const payload = {
-            ...record,
-            source_record_id: record.id,
-            workflow_id: config.id,
-            workflow_slug: config.workflow_slug,
-            receiver_function_url: config.receiver_function_url,
-          };
-
-          const response = await fetch(config.destination_endpoint_url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-
-          const recordId = String(record.id || i);
-          if (response.ok) {
-            results.push({ id: recordId, success: true });
-          } else {
-            const errorText = await response.text();
-            results.push({
-              id: recordId,
-              success: false,
-              error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`
-            });
-          }
-        } catch (err) {
-          const recordId = String(record.id || i);
-          results.push({
-            id: recordId,
-            success: false,
-            error: err instanceof Error ? err.message : "Unknown error"
-          });
-        }
-
-        if (i < sourceRecords.length - 1) {
-          await delay(DELAY_BETWEEN_REQUESTS_MS);
-        }
-      }
-
-      const successCount = results.filter((r) => r.success).length;
-
+    if (!dataGetterResponse.ok) {
+      const errorText = await dataGetterResponse.text();
+      console.error("Data getter error:", errorText);
       return new Response(
         JSON.stringify({
-          message: `Dispatched ${successCount} of ${sourceRecords.length} records`,
-          workflow_id: config.id,
-          workflow_slug: config.workflow_slug,
-          step_number: config.overall_step_number,
-          phase_type: config.phase_type,
-          source_table: config.source_table_name,
-          destination_url: config.destination_endpoint_url,
-          records_dispatched: sourceRecords.length,
-          success_count: successCount,
-          fail_count: sourceRecords.length - successCount,
-          results,
+          error: "Failed to fetch source data",
+          data_getter_status: dataGetterResponse.status,
+          details: errorText.substring(0, 500),
         }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
 
-    } else {
-      // =========================================================================
-      // STEP 3b: No source table - send company data directly to destination
-      // This is for workflows that start fresh with just company info
-      // =========================================================================
-      console.log("=== DIRECT DISPATCH (No source table) ===");
-      console.log("Sending", companies.length, "companies directly to destination");
+    const dataGetterResult: DataGetterResponse = await dataGetterResponse.json();
+    console.log("Data getter response:", {
+      success: dataGetterResult.success,
+      data_type: dataGetterResult.data_type,
+      record_count: dataGetterResult.record_count,
+    });
 
-      const results: { id: string; success: boolean; error?: string }[] = [];
-
-      for (let i = 0; i < companies.length; i++) {
-        const company = companies[i];
-
-        try {
-          const payload = {
-            company_id: company.company_id,
-            company_name: company.company_name,
-            company_domain: company.company_domain,
-            company_linkedin_url: company.company_linkedin_url,
-            workflow_id: config.id,
-            workflow_slug: config.workflow_slug,
-            receiver_function_url: config.receiver_function_url,
-          };
-
-          const response = await fetch(config.destination_endpoint_url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-
-          if (response.ok) {
-            results.push({ id: company.company_id, success: true });
-          } else {
-            const errorText = await response.text();
-            results.push({
-              id: company.company_id,
-              success: false,
-              error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`
-            });
-          }
-        } catch (err) {
-          results.push({
-            id: company.company_id,
-            success: false,
-            error: err instanceof Error ? err.message : "Unknown error"
-          });
-        }
-
-        if (i < companies.length - 1) {
-          await delay(DELAY_BETWEEN_REQUESTS_MS);
-        }
-      }
-
-      const successCount = results.filter((r) => r.success).length;
-
+    if (!dataGetterResult.success || dataGetterResult.record_count === 0) {
       return new Response(
         JSON.stringify({
-          message: `Dispatched ${successCount} of ${companies.length} companies directly`,
+          message: `No records to dispatch for workflow ${config.workflow_slug}`,
           workflow_id: config.id,
           workflow_slug: config.workflow_slug,
           step_number: config.overall_step_number,
-          phase_type: config.phase_type,
-          destination_url: config.destination_endpoint_url,
-          companies_dispatched: companies.length,
-          success_count: successCount,
-          fail_count: companies.length - successCount,
-          results,
+          data_type: dataGetterResult.data_type,
+          source_table: dataGetterResult.source_table,
+          record_count: 0,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // =========================================================================
+    // STEP 4: Dispatch records to destination with rate limiting
+    // =========================================================================
+    console.log("=== DISPATCHING TO DESTINATION ===");
+    console.log("Destination URL:", config.destination_endpoint_url);
+    console.log("Records to dispatch:", dataGetterResult.record_count);
+
+    const results: { id: string; success: boolean; error?: string }[] = [];
+    const records = dataGetterResult.records;
+
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+
+      try {
+        // Build the payload with workflow metadata
+        const payload = {
+          ...record,
+          source_record_id: record.id || record.company_id,
+          workflow_id: config.id,
+          workflow_slug: config.workflow_slug,
+          receiver_function_url: config.receiver_function_url,
+          // Include hq_target_company_id for storage worker tracking
+          hq_target_company_id: record.hq_target_company_id || record.company_id,
+        };
+
+        // Determine if destination is a Supabase function (needs auth)
+        const isSupabaseFunction = config.destination_endpoint_url.includes("supabase.co/functions/");
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (isSupabaseFunction) {
+          headers["Authorization"] = `Bearer ${supabaseKey}`;
+        }
+
+        const response = await fetch(config.destination_endpoint_url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        const recordId = String(record.id || record.company_id || i);
+        if (response.ok) {
+          results.push({ id: recordId, success: true });
+        } else {
+          const errorText = await response.text();
+          results.push({
+            id: recordId,
+            success: false,
+            error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`
+          });
+        }
+      } catch (err) {
+        const recordId = String(record.id || record.company_id || i);
+        results.push({
+          id: recordId,
+          success: false,
+          error: err instanceof Error ? err.message : "Unknown error"
+        });
+      }
+
+      // Rate limiting between requests
+      if (i < records.length - 1) {
+        await delay(DELAY_BETWEEN_REQUESTS_MS);
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+
+    return new Response(
+      JSON.stringify({
+        message: `Dispatched ${successCount} of ${records.length} records`,
+        workflow_id: config.id,
+        workflow_slug: config.workflow_slug,
+        step_number: config.overall_step_number,
+        phase_type: config.phase_type,
+        data_type: dataGetterResult.data_type,
+        source_table: dataGetterResult.source_table,
+        destination_url: config.destination_endpoint_url,
+        records_dispatched: records.length,
+        success_count: successCount,
+        fail_count: records.length - successCount,
+        results,
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
 
   } catch (err) {
     console.error("Master orchestrator error:", err);
