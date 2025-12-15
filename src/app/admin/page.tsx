@@ -42,6 +42,11 @@ const outboundLaunchCards = [
     href: "/admin/data-coverage",
   },
   {
+    name: "Company Enrichment Status",
+    description: "View which workflows a company has been through",
+    href: "/admin/company-enrichment-status",
+  },
+  {
     name: "Archive",
     description: "Archived and deprecated tools",
     href: "/admin/archive",

@@ -9,6 +9,7 @@ const navItems = [
   { name: "Workflows", href: "/workflows" },
   { name: "Outbound Launch Companies", href: "/companies" },
   { name: "Enrichment Eligible Companies", href: "/hq-target-companies" },
+  { name: "Company Enrichment Status", href: "/admin/company-enrichment-status" },
   { name: "Enrichment Results", href: "/enrichment-results" },
   { name: "People", href: "/people" },
 ];
