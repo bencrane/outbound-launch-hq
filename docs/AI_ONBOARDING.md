@@ -13,7 +13,50 @@ Before doing ANY work, read these files:
 | 1 | `docs/SOURCE_OF_TRUTH_TABLES.md` | **MISSION CRITICAL** - Which tables control what |
 | 2 | `docs/ENRICHMENT_SYSTEM_ARCHITECTURE.md` | How the pipeline works |
 | 3 | This file | Project overview |
-| 4 | `UPDATES.md` | Development changelog |
+| 4 | `UPDATES.md` | Development changelog - **check latest date for current state** |
+
+---
+
+## Current Project State (2025-12-17)
+
+### What's Working
+
+**Enrichment Pipeline Steps 1-4 are fully functional:**
+
+| Step | Name | Edge Function | Status |
+|------|------|---------------|--------|
+| 1 | Scrape Homepage | `scrape_homepage_v1` | ✅ Working |
+| 2 | Clean Homepage HTML | `clean_homepage_v1` | ✅ Working |
+| 3 | Find Case Studies Page URL | `find_case_studies_page_v1` | ✅ Working |
+| 4 | Scrape Case Studies Page | `scrape_case_studies_page_v1` | ✅ Working |
+
+**Data Flow:**
+```
+Homepage HTML → Cleaned HTML + Links → Case Studies Page URL → Case Studies Page HTML
+```
+
+### What's Next
+
+- **Step 5:** Clean case studies page HTML (extract links, text)
+- **Step 6+:** Extract individual case study URLs, scrape each, extract buyer details
+
+### Test Companies (3 enrolled in "case-study-champions" play)
+
+- nostra.ai
+- securitypalhq.com
+- forethought.ai
+
+### Key UI Pages
+
+- `/manual-gtm-enrichment` - Send companies through pipeline steps
+- `/admin/pipeline-monitor` - Real-time monitoring of data flow
+
+### For Latest Details
+
+Always check the most recent date section in `UPDATES.md` for:
+- What was just built/fixed
+- Specific implementation details
+- Any gotchas discovered
 
 ---
 

@@ -246,9 +246,9 @@ export default function ManualGTMEnrichmentPage() {
   const stepToEdgeFunction: Record<number, string> = {
     1: "scrape_homepage_v1",
     2: "clean_homepage_v1",
-    // Add more steps as they're built:
-    // 3: "find_case_studies_page_v1",
-    // etc.
+    3: "find_case_studies_page_v1",
+    4: "scrape_case_studies_page_v1",
+    // Add more steps as they're built
   };
 
   const handleConfirmSend = async () => {

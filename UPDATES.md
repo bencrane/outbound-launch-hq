@@ -453,4 +453,222 @@ GTM Dashboard on top of the data layer - filterable, sortable, exportable. All t
 
 ---
 
+## 2025-12-13
+
+### Documentation & AI Onboarding
+
+Created comprehensive technical documentation for AI assistant onboarding.
+
+#### New File: `docs/AI_ONBOARDING.md`
+
+A complete technical architecture document covering:
+
+1. **Project Overview** - Purpose, business workflow, tech stack
+2. **Two-Database Architecture** - Outbound Launch HQ (orchestration) vs GTM Teaser (data)
+3. **Complete Database Schemas** - All tables with SQL and field explanations
+4. **Enrichment Pipeline Deep Dive** - 6-step flow with payload examples at each stage
+5. **Edge Function Patterns** - Dispatcher, Master Receiver, Storage Worker code patterns
+6. **Workflow Configuration System** - DB-driven config explanation
+7. **Frontend Architecture** - Key pages and their purposes
+8. **Environment & Deployment** - Secrets, deployment commands, tsconfig notes
+9. **Critical Gotchas** - Clay POST vs GET, JWT verification, field name mismatches, rate limiting
+10. **MUST-READ Files** - Prioritized reading order for any AI starting work
+
+**Purpose:** Any AI instance can read this document and immediately understand:
+- How the enrichment pipeline works end-to-end
+- How to create new workflows following the blueprint
+- What pitfalls to avoid
+- Which files to read for specific patterns
+
+#### Key Files Reference
+
+| File | Purpose |
+|------|---------|
+| `docs/AI_ONBOARDING.md` | Complete technical architecture (NEW) |
+| `docs/NEW_ENRICHMENT_WORKFLOW_BLUEPRINT.md` | 8-step workflow creation checklist |
+| `guidance.md` | Project context and preferences |
+| `UPDATES.md` | This file - development changelog |
+
+---
+
+## 2025-12-17
+
+### Major Pipeline Progress - Steps 1-4 Working End-to-End
+
+After fixing issues from a previous session, the enrichment pipeline now has 4 working steps with proper data storage and logging.
+
+#### Architecture Clarifications
+
+**Current (Correct) Architecture:**
+- **storage_worker_v2** - Generic storage worker, reads `destination_config` from workflow
+- **enrichment_logger_v1** - Writes to `enrichment_results_log` (always) and `company_play_step_completions` (on success)
+
+**Deprecated (Do Not Use):**
+- `master_dispatcher_v1`, `master_receiver_v1`
+- `generic_storage_worker_v1`
+- `global-enrichment-logger-worker`
+- `enrichment_logs` table (use `enrichment_results_log` instead)
+
+**Key Tables (HQ DB):**
+- `enrichment_results_log` - Every storage operation logged here
+- `company_play_step_completions` - Tracks which companies completed which steps
+- `enrichment_batches` - Groups of companies sent through together
+
+---
+
+### Pipeline Monitor Page
+
+**New Page:** `/admin/pipeline-monitor`
+
+Real-time monitoring UI showing:
+- `enrichment_results_log` entries with success/error status
+- `company_play_step_completions` entries
+- Destination table data for selected workflow
+- Auto-refresh every 5 seconds
+- Filter by workflow/step
+
+---
+
+### Step 3: Find Case Studies Page URL (AI)
+
+**Edge Function:** `find_case_studies_page_v1`
+
+**Purpose:** Analyze href attributes from cleaned homepage, identify the main case studies page, construct full URL.
+
+**Model:** gpt-4o (o1-mini not available on API key)
+
+**Key Innovation - Phased Prompting:**
+The AI follows a structured 4-phase approach:
+
+```
+PHASE 1 - FILTER: Skip irrelevant hrefs (tel:, mailto:, #, social media)
+PHASE 2 - IDENTIFY: Find main case studies page (not individual articles)
+PHASE 3 - CONSTRUCT: Build full URL from relative paths + domain
+PHASE 4 - VALIDATE: Ensure result is valid https:// URL
+```
+
+**Why phased approach:**
+- Raw href values can be relative (`/customers`), absolute (`https://...`), or special protocols
+- Calling them "links" confused the AI - renamed to "href values extracted from anchor tags"
+- Explicit URL construction rules prevent AI from returning relative paths
+
+**Destination Table (Workspace DB):** `company_case_studies_page`
+```sql
+CREATE TABLE company_case_studies_page (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL,
+  company_domain TEXT NOT NULL,
+  company_name TEXT,
+  case_studies_page_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT unique_company_domain_case_studies UNIQUE (company_domain)
+);
+```
+
+**Results:**
+| Company | Output |
+|---------|--------|
+| nostra.ai | `https://nostra.ai/success-stories` |
+| securitypalhq.com | `https://securitypalhq.com/customers` |
+| forethought.ai | `https://forethought.ai/customers` |
+
+---
+
+### Step 4: Scrape Case Studies Page (Zenrows)
+
+**Edge Function:** `scrape_case_studies_page_v1`
+
+**Purpose:** Fetch the case studies page URL from Step 3, scrape with Zenrows.
+
+**Flow:**
+1. Read `case_studies_page_url` from `company_case_studies_page` table
+2. Call Zenrows with same settings as Step 1 (js_render, premium_proxy, us)
+3. Store HTML to `case_studies_page_scrapes`
+
+**Destination Table (Workspace DB):** `case_studies_page_scrapes`
+```sql
+CREATE TABLE case_studies_page_scrapes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL,
+  company_domain TEXT NOT NULL,
+  company_name TEXT,
+  case_studies_page_url TEXT,
+  case_studies_page_html TEXT,
+  scraped_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT unique_company_domain_cs_scrapes UNIQUE (company_domain)
+);
+```
+
+---
+
+### Complete Pipeline (Steps 1-4)
+
+```
+Step 1: Scrape Homepage (Zenrows)
+  └─→ company_homepage_scrapes (Workspace DB)
+       ↓
+Step 2: Clean Homepage HTML (AI)
+  └─→ company_homepage_cleaned (Workspace DB)
+       ↓
+Step 3: Find Case Studies Page URL (AI - gpt-4o)
+  └─→ company_case_studies_page (Workspace DB)
+       ↓
+Step 4: Scrape Case Studies Page (Zenrows)
+  └─→ case_studies_page_scrapes (Workspace DB)
+```
+
+**All steps tested successfully with 3 companies:**
+- nostra.ai
+- securitypalhq.com
+- forethought.ai
+
+---
+
+### UI Updates
+
+**Manual GTM Enrichment Page** (`/manual-gtm-enrichment`):
+- `stepToEdgeFunction` mapping updated for Steps 1-4
+
+```typescript
+const stepToEdgeFunction: Record<number, string> = {
+  1: "scrape_homepage_v1",
+  2: "clean_homepage_v1",
+  3: "find_case_studies_page_v1",
+  4: "scrape_case_studies_page_v1",
+};
+```
+
+**Sidebar:** Added "Pipeline Monitor" link
+
+---
+
+### Fixes Applied
+
+1. **play_name consistency** - All workflows updated to use `case-study-champions` (was mismatched)
+
+2. **scrape_homepage_v1** - Added `play_name` pass-through to storage worker
+
+3. **Edge function auth** - All functions deployed with `--no-verify-jwt`
+
+4. **Step 3 prompt engineering** - Multiple iterations to get AI to return proper full URLs
+
+---
+
+### Cost Estimates
+
+**Step 3 (gpt-4o) for 1000 companies:**
+- Input: ~2.5M tokens × $2.50/1M = $6.25
+- Output: ~30K tokens × $10/1M = $0.30
+- **Total: ~$7 per 1000 companies**
+
+---
+
+### Next Steps
+
+- Step 5: Clean case studies page HTML (AI)
+- Step 6+: Extract individual case study URLs, scrape each, extract buyer details
+
+---
+
 *Updates will be added as milestones are completed.*

@@ -1,64 +1,261 @@
-# New Enrichment Workflow Blueprint
+# [ARCHIVED] New Enrichment Workflow Blueprint
 
-This document defines the standard process for creating a new enrichment workflow in the Outbound Launch HQ + GTM Teaser system.
-
----
-
-## Pre-Build Questions (Ask User)
-
-### 1. Workflow Identity
-- **Workflow name/title**: Human-readable name (e.g., "Get LinkedIn URLs for Buyer Details")
-- **Workflow slug**: Machine-readable identifier (e.g., `get-person-linkedin-url`)
-- **Category**: Which category? (e.g., `GTM Teaser HQ`, `Outbound Launch HQ`)
-- **Description**: Brief description of what this workflow does
-
-### 2. Source Data
-- **Source table name**: Which table does the dispatcher read from? (e.g., `extracted_buyer_details_from_case_study_urls`)
-- **Source table company FK**: Which column links records to companies? (e.g., `hq_target_company_id`)
-- **Source table select columns**: Which columns to fetch and send to Clay? (e.g., `id, hq_target_company_id, hq_target_company_name, extracted_contact_name`)
-
-### 3. Destination/Enrichment
-- **Destination type**: Where does data go? (`clay`, `zenrows`, `leadmagic`, etc.)
-- **Clay webhook URL**: The Clay table webhook URL (user provides after creating Clay table)
-- **What data does Clay need?**: List the fields Clay expects to perform the enrichment
-
-### 4. Return Data
-- **What does Clay return?**: List the fields Clay will send back after enrichment
-- **Destination table name**: Where to store results in GTM Teaser DB? (e.g., `buyer_linkedin_enrichments`)
-- **Destination table schema**: Define columns for the new table (if it doesn't exist)
-
-### 5. Pass-Through Fields
-Standard pass-through fields for all workflows:
-- `source_record_id` (renamed from `id`)
-- `hq_target_company_id`
-- `hq_target_company_name`
-- `hq_target_company_domain`
-- `workflow_id`
-- `workflow_slug`
-- `receiver_function_url` (master receiver)
+> **ARCHIVED: 2025-12-17**
+>
+> This document is outdated. It references the old architecture with master_dispatcher_v1, master_receiver_v1, generic_storage_worker_v1, and writes to the wrong logging tables.
+>
+> **Use the new document instead: `CREATING_ENRICHMENT_WORKFLOWS.md`**
 
 ---
 
-## Build Checklist
+~~This document defines the standard process for creating a new enrichment workflow in the Outbound Launch HQ + GTM Teaser system.~~
 
-### Step 1: Create Destination Table (GTM Teaser DB)
+---
+
+## ⚠️ PREREQUISITE: Understand the Config System First
+
+**Before reading this document, you MUST understand the core config pattern.**
+
+Read `AI_ONBOARDING.md` Section 6 ("Workflow Configuration System") first. Key points:
+
+1. **`db_driven_enrichment_workflows`** is THE config table for all workflows
+2. **Dispatcher** reads: `source_table_name`, `source_table_company_fk`, `source_table_select_columns`, `destination_endpoint_url`
+3. **Storage worker** reads: `destination_table_name`, `destination_field_mappings`, `array_field_configs`
+4. **Everything is DB-driven** - no hardcoded logic in the storage worker
+
+---
+
+## Quick Reference: What Gets Sent to Clay
+
+The **master_dispatcher_v1** sends the following payload to Clay for EACH record in the source table:
+
+```json
+{
+  // 1. ALL columns specified in source_table_select_columns
+  "id": "source-record-uuid",
+  "company_name": "Airtable",
+  "company_domain": "airtable.com",
+  "company_linkedin_url": "https://linkedin.com/company/airtable",
+  // ... any other columns from source_table_select_columns
+
+  // 2. ALWAYS added by dispatcher (from the record)
+  "source_record_id": "source-record-uuid",  // Same as 'id', renamed for clarity
+
+  // 3. ALWAYS added by dispatcher (from workflow config in db_driven_enrichment_workflows)
+  "workflow_id": "workflow-uuid",
+  "workflow_slug": "leadmagic-company-enrich-of-buyer-past-employers",
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1"
+}
+```
+
+**IMPORTANT**: The dispatcher ALWAYS includes `workflow_id`, `workflow_slug`, and `receiver_function_url`. These come from the `db_driven_enrichment_workflows` table, not from the source table.
+
+---
+
+## Architecture: How Data Flows
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: UI (hq-target-companies page)                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ User selects companies → clicks "Send to Enrichment" → selects workflow    │
+│                                                                             │
+│ POST to master_dispatcher_v1:                                               │
+│ {                                                                           │
+│   "companies": [                                                            │
+│     { "company_id": "uuid", "company_name": "X", "company_domain": "x.com" }│
+│   ],                                                                        │
+│   "workflow": { "id": "workflow-uuid" }                                     │
+│ }                                                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: master_dispatcher_v1                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. Looks up workflow config from db_driven_enrichment_workflows             │
+│    - Gets: source_table_name, source_table_company_fk,                      │
+│            source_table_select_columns, destination_endpoint_url,           │
+│            receiver_function_url, workflow_slug                             │
+│                                                                             │
+│ 2. Queries GTM Teaser DB:                                                   │
+│    SELECT {source_table_select_columns}                                     │
+│    FROM {source_table_name}                                                 │
+│    WHERE {source_table_company_fk} IN (company_ids from request)            │
+│                                                                             │
+│ 3. For EACH record, POSTs to Clay (with 100ms delay between requests):      │
+│    {                                                                        │
+│      ...all_columns_from_select,                                            │
+│      "source_record_id": record.id,                                         │
+│      "workflow_id": config.id,                                              │
+│      "workflow_slug": config.workflow_slug,                                 │
+│      "receiver_function_url": config.receiver_function_url                  │
+│    }                                                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 3: Clay Webhook                                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ - Receives the payload                                                      │
+│ - Runs enrichment steps (API calls, AI, etc.)                               │
+│ - HTTP Action POSTs results back to receiver_function_url                   │
+│                                                                             │
+│ CRITICAL: Clay must pass through these fields in the response:              │
+│   - workflow_id (REQUIRED for routing)                                      │
+│   - source_record_id                                                        │
+│   - hq_target_company_id, hq_target_company_name, hq_target_company_domain  │
+│   - Any other context fields needed for storage                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 4: master_receiver_v1                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. Extracts workflow_id from payload (REQUIRED)                             │
+│ 2. Looks up storage_worker_function_url from db_driven_enrichment_workflows │
+│ 3. Forwards entire payload to the storage worker                            │
+│                                                                             │
+│ NOTE: If workflow has source_record_array_field set (e.g., "people"),       │
+│       receiver iterates over the array and calls storage worker per item    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 5: generic_storage_worker_v1 (DB-DRIVEN - NO HARDCODED LOGIC)          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ THE STORAGE WORKER READS ALL ITS BEHAVIOR FROM THE CONFIG TABLE:            │
+│                                                                             │
+│ 1. Extracts workflow_id from payload                                        │
+│                                                                             │
+│ 2. Queries db_driven_enrichment_workflows:                                  │
+│    SELECT destination_table_name,                                           │
+│           destination_field_mappings,                                       │
+│           array_field_configs,                                              │
+│           raw_payload_table_name,                                           │
+│           raw_payload_field                                                 │
+│    FROM db_driven_enrichment_workflows                                      │
+│    WHERE id = payload.workflow_id                                           │
+│                                                                             │
+│ 3. Uses destination_field_mappings to map payload → DB columns:             │
+│    { "clay_field": "db_column" } means payload.clay_field → record.db_column│
+│                                                                             │
+│ 4. INSERTs into destination_table_name                                      │
+│                                                                             │
+│ 5. If array_field_configs exists, explodes arrays into child tables         │
+│                                                                             │
+│ 6. Optionally calls global_logger_function_url                              │
+│                                                                             │
+│ ⚠️ THERE IS NO PER-WORKFLOW CODE. ALL BEHAVIOR COMES FROM CONFIG.          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Creating a New Workflow: Step-by-Step
+
+### Phase 1: Dispatch Only (Test Clay Integration)
+
+When first setting up a workflow, you may want to just send data to Clay and see what comes back before configuring storage.
+
+#### Step 1.1: Gather Required Information
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `title` | Human-readable name | "Enrich Buyer Past Employers (LeadMagic)" |
+| `workflow_slug` | Machine identifier (lowercase, hyphens) | `leadmagic-company-enrich-of-buyer-past-employers` |
+| `category` | UI grouping | `company-enrichments` |
+| `destination_endpoint_url` | Clay webhook URL | `https://api.clay.com/v3/sources/webhook/...` |
+| `source_table_name` | Table/view in GTM Teaser DB | `clay_work_history_with_job_titles` |
+| `source_table_company_fk` | Column linking to companies | `hq_target_company_id` |
+| `source_table_select_columns` | Columns to send to Clay | See below |
+
+#### Step 1.2: Determine Source Columns
+
+Check what columns exist in your source table:
+
+```bash
+# Query sample record to see available columns
+GTM_KEY="your-gtm-anon-key"
+curl -s "https://kwxdezafluqhcmovnwbn.supabase.co/rest/v1/{source_table}?select=*&limit=1" \
+  -H "apikey: $GTM_KEY" -H "Authorization: Bearer $GTM_KEY"
+```
+
+Common patterns for `source_table_select_columns`:
+
+```
+# For company enrichment (LeadMagic, etc.)
+id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,company_name,company_domain,company_linkedin_url
+
+# For person enrichment (LinkedIn profile, etc.)
+id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,contact_linkedin_url,extracted_contact_name
+
+# For finding contacts at companies (includes job titles)
+id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,person_name,company_name,company_domain,company_linkedin_url,ai_icp_job_title_one,ai_icp_job_title_two,...
+```
+
+#### Step 1.3: Insert Workflow Config
+
+```bash
+API_KEY="your-outbound-launch-anon-key"
+
+curl -s -X POST "https://wvjhddcwpedmkofmhfcp.supabase.co/rest/v1/db_driven_enrichment_workflows" \
+  -H "apikey: $API_KEY" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  -d '{
+    "title": "Enrich Buyer Past Employers (LeadMagic)",
+    "workflow_slug": "leadmagic-company-enrich-of-buyer-past-employers",
+    "description": "Sends buyer past employer companies to Clay for LeadMagic company enrichment",
+    "category": "company-enrichments",
+    "status": "active",
+    "request_type": "POST",
+    "destination_type": "api",
+    "destination_endpoint_url": "https://api.clay.com/v3/sources/webhook/...",
+    "source_table_name": "clay_work_history_with_job_titles",
+    "source_table_company_fk": "hq_target_company_id",
+    "source_table_select_columns": "id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,person_name,company_name,company_domain,company_linkedin_url",
+    "dispatcher_function_name": "master_dispatcher_v1",
+    "dispatcher_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_dispatcher_v1",
+    "receiver_function_name": "master_receiver_v1",
+    "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1"
+  }'
+```
+
+#### Step 1.4: Test Dispatch
+
+1. Go to http://localhost:3006/hq-target-companies
+2. Select the workflow's category filter
+3. Select a company with eligible records
+4. Click "Send to Enrichment" → select your workflow
+5. Check Clay to see the data arrived
+
+---
+
+### Phase 2: Configure Storage (After Seeing Clay Response)
+
+Once you know what Clay returns, configure the storage side.
+
+#### Step 2.1: Create Destination Table in GTM Teaser DB
 
 ```sql
--- Template
 CREATE TABLE {destination_table_name} (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-  -- Source record reference
-  source_record_id UUID NOT NULL,
+  -- Source reference
+  source_record_id UUID,
 
-  -- Company context (for querying without joins)
+  -- Company context (denormalized for easy querying)
   hq_target_company_id UUID,
   hq_target_company_name TEXT,
   hq_target_company_domain TEXT,
 
-  -- Enriched data fields (workflow-specific)
-  {field_1} {type},
-  {field_2} {type},
+  -- Enriched fields (from Clay response)
+  {enriched_field_1} {type},
+  {enriched_field_2} {type},
   ...
 
   -- Metadata
@@ -68,312 +265,154 @@ CREATE TABLE {destination_table_name} (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Index for querying by source record
-CREATE INDEX idx_{table_name}_source_record
-ON {destination_table_name}(source_record_id);
-
--- Index for querying by company
-CREATE INDEX idx_{table_name}_company
-ON {destination_table_name}(hq_target_company_id);
+-- Indexes
+CREATE INDEX idx_{table}_source_record ON {destination_table_name}(source_record_id);
+CREATE INDEX idx_{table}_company ON {destination_table_name}(hq_target_company_id);
 ```
 
-### Step 2: Create Storage Worker Edge Function
-
-**Location**: `/supabase/functions/{workflow_slug}_storage_worker_v1/index.ts`
-
-**Template structure**:
-```typescript
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-interface IncomingPayload {
-  // Source record reference
-  source_record_id: string;
-  id?: string; // May also come as 'id'
-
-  // Company context
-  hq_target_company_id?: string;
-  hq_target_company_name?: string;
-  hq_target_company_domain?: string;
-
-  // Workflow context
-  workflow_id?: string;
-  workflow_slug?: string;
-
-  // Enriched fields from Clay (workflow-specific)
-  {enriched_field_1}?: {type};
-  {enriched_field_2}?: {type};
-
-  [key: string]: unknown;
-}
-
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  try {
-    const rawBody = await req.text();
-
-    if (!rawBody || rawBody.trim() === "") {
-      return new Response(
-        JSON.stringify({ error: "Empty request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    let payload: IncomingPayload;
-    try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid JSON" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Get source record ID (may be 'source_record_id' or 'id')
-    const sourceRecordId = payload.source_record_id || payload.id;
-    if (!sourceRecordId) {
-      return new Response(
-        JSON.stringify({ error: "source_record_id is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Connect to GTM Teaser DB
-    const gtmUrl = Deno.env.get("GTM_SUPABASE_URL");
-    const gtmKey = Deno.env.get("GTM_SUPABASE_SERVICE_ROLE_KEY");
-
-    if (!gtmUrl || !gtmKey) {
-      return new Response(
-        JSON.stringify({ error: "GTM DB credentials not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const gtmSupabase = createClient(gtmUrl, gtmKey);
-
-    // Build record for insertion
-    const record: Record<string, unknown> = {
-      source_record_id: sourceRecordId,
-      enriched_at: new Date().toISOString(),
-    };
-
-    // Add company context if provided
-    if (payload.hq_target_company_id) record.hq_target_company_id = payload.hq_target_company_id;
-    if (payload.hq_target_company_name) record.hq_target_company_name = payload.hq_target_company_name;
-    if (payload.hq_target_company_domain) record.hq_target_company_domain = payload.hq_target_company_domain;
-
-    // Add workflow context
-    if (payload.workflow_id) record.workflow_id = payload.workflow_id;
-    if (payload.workflow_slug) record.workflow_slug = payload.workflow_slug;
-
-    // Add enriched fields (workflow-specific)
-    if (payload.{enriched_field_1}) record.{enriched_field_1} = payload.{enriched_field_1};
-    if (payload.{enriched_field_2}) record.{enriched_field_2} = payload.{enriched_field_2};
-
-    // Insert into destination table
-    const { data, error: insertError } = await gtmSupabase
-      .from("{destination_table_name}")
-      .insert(record)
-      .select()
-      .single();
-
-    if (insertError) {
-      return new Response(
-        JSON.stringify({ error: insertError.message }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Optionally update source record status
-    // await gtmSupabase
-    //   .from("{source_table_name}")
-    //   .update({ enrichment_status: "enriched" })
-    //   .eq("id", sourceRecordId);
-
-    return new Response(
-      JSON.stringify({ success: true, data }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-  }
-});
-```
-
-### Step 3: Deploy Storage Worker
+#### Step 2.2: Update Workflow Config with Storage Settings
 
 ```bash
-supabase functions deploy {workflow_slug}_storage_worker_v1 --no-verify-jwt
+# Update the workflow with storage configuration
+curl -s -X PATCH "https://wvjhddcwpedmkofmhfcp.supabase.co/rest/v1/db_driven_enrichment_workflows?workflow_slug=eq.{your-workflow-slug}" \
+  -H "apikey: $API_KEY" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  -d '{
+    "storage_worker_function_name": "generic_storage_worker_v1",
+    "storage_worker_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/generic_storage_worker_v1",
+    "destination_table_name": "{your_destination_table}",
+    "destination_field_mappings": {
+      "clay_field_name": "db_column_name",
+      "another_clay_field": "another_db_column",
+      "source_record_id": "source_record_id",
+      "hq_target_company_id": "hq_target_company_id",
+      "hq_target_company_name": "hq_target_company_name",
+      "hq_target_company_domain": "hq_target_company_domain"
+    }
+  }'
 ```
 
-### Step 4: Add Workflow Config to DB (Outbound Launch HQ)
+#### Step 2.3: Configure Clay HTTP Action
 
-```sql
-INSERT INTO db_driven_enrichment_workflows (
-  title,
-  workflow_slug,
-  description,
-  category,
-  status,
+In Clay, add an HTTP action at the end of the table that POSTs to master_receiver_v1.
 
-  -- Source config (dispatcher reads from here)
-  source_table_name,
-  source_table_company_fk,
-  source_table_select_columns,
+**URL**: `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1`
 
-  -- Destination config
-  destination_type,
-  destination_endpoint_url,  -- Clay webhook URL (set after Clay table created)
+**Method**: POST
 
-  -- Function URLs
-  dispatcher_function_url,
-  receiver_function_url,      -- Always master_receiver_v1
-  storage_worker_function_url
-) VALUES (
-  '{Workflow Title}',
-  '{workflow-slug}',
-  '{Description of what this workflow does}',
-  'GTM Teaser HQ',
-  'active',
-
-  '{source_table_name}',
-  '{source_table_company_fk}',
-  '{comma-separated column names}',
-
-  'clay',
-  NULL,  -- Set later after Clay table created
-
-  'https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/dispatch_get_person_linkedin_url_v1',  -- Use generic dispatcher
-  'https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1',
-  'https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/{workflow_slug}_storage_worker_v1'
-);
-```
-
-### Step 5: Create Clay Table
-
-1. Go to Clay
-2. Create new table with webhook trigger
-3. Configure columns to receive the payload fields
-4. Add enrichment steps
-5. Add HTTP action to send results back to master receiver
-6. Copy webhook URL
-
-### Step 6: Update Workflow Config with Clay Webhook URL
-
-```sql
-UPDATE db_driven_enrichment_workflows
-SET destination_endpoint_url = '{clay_webhook_url}'
-WHERE workflow_slug = '{workflow-slug}';
-```
-
-### Step 7: Configure Clay HTTP Response
-
-Clay HTTP action should POST to: `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1`
-
-**Request body template** (pass through IDs + enriched data):
+**Body** (must include workflow_id for routing):
 ```json
 {
+  "workflow_id": "{{workflow_id}}",
+  "workflow_slug": "{{workflow_slug}}",
   "source_record_id": "{{source_record_id}}",
   "hq_target_company_id": "{{hq_target_company_id}}",
   "hq_target_company_name": "{{hq_target_company_name}}",
   "hq_target_company_domain": "{{hq_target_company_domain}}",
-  "workflow_id": "{{workflow_id}}",
-  "workflow_slug": "{{workflow_slug}}",
-  "{enriched_field_1}": "{{enriched_field_1}}",
-  "{enriched_field_2}": "{{enriched_field_2}}"
+  "enriched_field_1": "{{enriched_field_1}}",
+  "enriched_field_2": "{{enriched_field_2}}"
 }
 ```
 
-### Step 8: Test End-to-End
-
-1. Go to Enrichment Eligible Companies page
-2. Select a company with eligible records
-3. Click workflow button to send to enrichment
-4. Verify:
-   - Dispatcher logs show records sent to Clay
-   - Clay table receives records
-   - Clay enriches and sends back to master receiver
-   - Master receiver routes to storage worker
-   - Storage worker inserts into destination table
-
 ---
 
-## Architecture Diagram
+## Real Examples
 
+### Example 1: LeadMagic Company Enrichment
+
+```json
+{
+  "title": "Enrich Buyer Past Employers (LeadMagic)",
+  "workflow_slug": "leadmagic-company-enrich-of-buyer-past-employers",
+  "category": "company-enrichments",
+  "source_table_name": "clay_work_history_with_job_titles",
+  "source_table_company_fk": "hq_target_company_id",
+  "source_table_select_columns": "id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,person_name,company_name,company_domain,company_linkedin_url",
+  "destination_endpoint_url": "https://api.clay.com/v3/sources/webhook/...",
+  "dispatcher_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_dispatcher_v1",
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1"
+}
 ```
-[UI: Enrichment Eligible Companies]
-          ↓ POST {companies, workflow}
-[Dispatcher Function]
-  - Reads workflow config from DB (source of truth)
-  - Queries source_table_name using source_table_company_fk
-  - Selects source_table_select_columns
-  - Sends each record to Clay with rate limiting
-          ↓ POST (100ms delay between requests)
-[Clay Webhook]
-  - Receives source data + pass-through IDs
-  - Runs enrichment steps
-  - Sends results back via HTTP action
-          ↓ POST
-[Master Receiver]
-  - Reads workflow_id from payload
-  - Looks up storage_worker_function_url from DB
-  - Forwards payload to storage worker
-          ↓ POST
-[Storage Worker]
-  - Parses enriched data
-  - Inserts into destination table
-  - Optionally updates source record status
-          ↓ INSERT
-[GTM Teaser DB: Destination Table]
+
+### Example 2: Find Contacts at Buyer Past Employer
+
+```json
+{
+  "title": "Find Contacts at Buyer Past Employer with Clay",
+  "workflow_slug": "clay-find-contacts-at-buyer-past-employer",
+  "category": "contact-enrichments",
+  "source_table_name": "clay_work_history_with_job_titles",
+  "source_table_company_fk": "hq_target_company_id",
+  "source_table_select_columns": "id,source_record_id,hq_target_company_id,hq_target_company_name,hq_target_company_domain,person_name,company_name,company_domain,company_linkedin_url,ai_icp_job_title_one,ai_icp_job_title_two,ai_icp_job_title_three,ai_icp_job_title_four,ai_icp_job_title_five,ai_icp_job_title_six,ai_icp_job_title_seven,ai_icp_job_title_eight,ai_icp_job_title_nine,ai_icp_job_title_ten",
+  "destination_table_name": "clay_find_contact_profile_data",
+  "storage_worker_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/generic_storage_worker_v1",
+  "source_record_array_field": "find_contacts_payload.people"
+}
 ```
 
 ---
 
-## Naming Conventions
+## Key Database Tables
 
-| Component | Pattern | Example |
-|-----------|---------|---------|
-| Workflow slug | `{action}-{target}-{detail}` | `get-person-linkedin-url` |
-| Dispatcher function | `dispatch_{workflow_slug}_v1` | `dispatch_get_person_linkedin_url_v1` |
-| Storage worker function | `{workflow_slug}_storage_worker_v1` | `get_person_linkedin_url_storage_worker_v1` |
-| Destination table | `clay_{target}_{result}` | `clay_person_linkedin_profiles` |
+### db_driven_enrichment_workflows (Outbound Launch HQ DB)
 
----
-
-## Config Fields Reference
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `title` | Human-readable name | "Get LinkedIn URLs for Buyer Details" |
-| `workflow_slug` | Machine identifier | `get-person-linkedin-url` |
-| `category` | Grouping for UI | `GTM Teaser HQ` |
-| `status` | `active` or `draft` | `active` |
-| `source_table_name` | Table dispatcher reads from | `extracted_buyer_details_from_case_study_urls` |
-| `source_table_company_fk` | FK column to filter by company | `hq_target_company_id` |
-| `source_table_select_columns` | Columns to fetch | `id, hq_target_company_id, ...` |
-| `destination_type` | Enrichment provider | `clay` |
-| `destination_endpoint_url` | Clay webhook URL | `https://api.clay.com/...` |
-| `dispatcher_function_url` | Dispatcher edge function | `https://.../functions/v1/dispatch_...` |
-| `receiver_function_url` | Always master receiver | `https://.../functions/v1/master_receiver_v1` |
-| `storage_worker_function_url` | Storage worker edge function | `https://.../functions/v1/..._storage_worker_v1` |
+| Column | Purpose |
+|--------|---------|
+| `id` | Primary key, used as workflow_id |
+| `title` | Human-readable name for UI |
+| `workflow_slug` | Machine identifier |
+| `category` | UI filtering |
+| `status` | "active" or "draft" |
+| `source_table_name` | Table in GTM DB to read from |
+| `source_table_company_fk` | Column to filter by company |
+| `source_table_select_columns` | Columns to fetch and send to Clay |
+| `destination_endpoint_url` | Clay webhook URL |
+| `dispatcher_function_url` | Always master_dispatcher_v1 |
+| `receiver_function_url` | Always master_receiver_v1 |
+| `storage_worker_function_url` | generic_storage_worker_v1 or custom |
+| `destination_table_name` | Table in GTM DB to write results |
+| `destination_field_mappings` | JSON mapping Clay fields → DB columns |
+| `array_field_configs` | Config for exploding arrays to child tables |
+| `source_record_array_field` | If Clay returns array, field path to iterate |
 
 ---
 
-## Notes
+## Troubleshooting
 
-- **Dispatcher is generic**: The same dispatcher (`dispatch_get_person_linkedin_url_v1`) can potentially serve multiple workflows if they have similar source structures. Config drives behavior.
-- **Master receiver routes by workflow_id**: Always send `workflow_id` in payload so master receiver can look up the correct storage worker.
-- **Rate limiting**: Dispatcher enforces 100ms delay between Clay requests (max 10/sec).
-- **Pass-through fields**: Always include company context for easy querying in destination tables.
+### "workflow_id is required for routing"
+Clay HTTP action is not passing through the workflow_id field.
+
+### Data not showing in Clay
+- Check source_table_select_columns includes the fields Clay needs
+- Verify source_table_company_fk is correct
+- Check there are actually records in source table for selected companies
+
+### Storage worker not receiving data
+- Verify storage_worker_function_url is set in workflow config
+- Check Clay HTTP action is POSTing (not GET)
+- Ensure workflow_id is in Clay response payload
+
+### Fields are NULL in destination table
+- Check destination_field_mappings maps the correct Clay field names
+- Verify Clay is returning those fields in the HTTP action body
+
+---
+
+## Rate Limiting
+
+- Master dispatcher enforces **100ms delay** between requests to Clay
+- This equals max **10 requests/second**
+- For 1000 records, dispatch takes ~100 seconds
+
+---
+
+## URLs Reference
+
+| Function | URL |
+|----------|-----|
+| Master Dispatcher | `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_dispatcher_v1` |
+| Master Receiver | `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/master_receiver_v1` |
+| Generic Storage Worker | `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/generic_storage_worker_v1` |
+| Global Logger | `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/global-enrichment-logger-worker` |

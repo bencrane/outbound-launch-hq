@@ -33,9 +33,6 @@ interface WorkflowConfig {
   destination_endpoint_url: string | null;
   destination_type: string | null;
   receiver_function_url: string | null;
-  source_table_name: string | null;
-  source_table_company_fk: string | null;
-  source_table_select_columns: string | null;
 }
 
 interface DataGetterResponse {
@@ -121,10 +118,7 @@ serve(async (req) => {
           status,
           destination_endpoint_url,
           destination_type,
-          receiver_function_url,
-          source_table_name,
-          source_table_company_fk,
-          source_table_select_columns
+          receiver_function_url
         `)
         .eq("id", workflow.id)
         .single();
@@ -157,10 +151,7 @@ serve(async (req) => {
           status,
           destination_endpoint_url,
           destination_type,
-          receiver_function_url,
-          source_table_name,
-          source_table_company_fk,
-          source_table_select_columns
+          receiver_function_url
         `)
         .eq("status", "active")
         .gt("overall_step_number", stepThreshold)
@@ -233,15 +224,7 @@ serve(async (req) => {
 
     const dataGetterPayload = {
       companies: companies,
-      workflow_config: {
-        id: config.id,
-        workflow_slug: config.workflow_slug,
-        title: config.title,
-        overall_step_number: config.overall_step_number,
-        source_table_name: config.source_table_name,
-        source_table_company_fk: config.source_table_company_fk,
-        source_table_select_columns: config.source_table_select_columns,
-      },
+      workflow_id: config.id,
     };
 
     const dataGetterResponse = await fetch(dataGetterUrl, {

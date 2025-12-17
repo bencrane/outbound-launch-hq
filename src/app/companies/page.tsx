@@ -2,64 +2,109 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Company, DBDrivenEnrichmentWorkflow } from "@/types/database";
+
+interface Company {
+  id: string;
+  company_name: string | null;
+  company_domain: string | null;
+  company_linkedin_url: string | null;
+  created_at: string;
+}
+
+interface Enrollment {
+  id: string;
+  company_id: string;
+  play_name: string;
+  status: string;
+  enrolled_at: string;
+}
 
 type SortField = "company_name" | "company_domain" | "created_at";
 type SortDirection = "asc" | "desc";
 
+// Available plays/campaigns
+const AVAILABLE_PLAYS = [
+  { value: "case-study-champions", label: "Case Study Champions" },
+];
+
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
-  const [workflows, setWorkflows] = useState<DBDrivenEnrichmentWorkflow[]>([]);
+  const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [showEnrichmentMenu, setShowEnrichmentMenu] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showEnrollDropdown, setShowEnrollDropdown] = useState(false);
+  const [enrolling, setEnrolling] = useState(false);
+  const [actionResult, setActionResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [filterPlay, setFilterPlay] = useState<string | null>(null); // null = show all
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_HQ_URL || process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_HQ_ANON_KEY || process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
-  useEffect(() => {
-    async function fetchData() {
-      if (!supabaseUrl || !supabaseAnonKey) {
-        setError("Supabase not configured");
-        setLoading(false);
-        return;
-      }
-
-      const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-      const [companiesResult, workflowsResult] = await Promise.all([
-        supabase.from("companies").select("*"),
-        supabase.from("db_driven_enrichment_workflows").select("*").eq("status", "active").eq("category", "Outbound Launch HQ"),
-      ]);
-
-      if (companiesResult.error) {
-        setError(companiesResult.error.message);
-        setLoading(false);
-        return;
-      }
-
-      if (workflowsResult.error) {
-        console.error("Failed to fetch workflows:", workflowsResult.error);
-      }
-
-      setCompanies(companiesResult.data || []);
-      setWorkflows(workflowsResult.data || []);
+  const fetchData = async () => {
+    if (!supabaseUrl || !supabaseAnonKey) {
+      setError("Supabase not configured");
       setLoading(false);
+      return;
     }
 
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    // Fetch companies
+    const { data: companiesData, error: companiesError } = await supabase
+      .from("companies")
+      .select("*");
+
+    if (companiesError) {
+      setError(companiesError.message);
+      setLoading(false);
+      return;
+    }
+
+    // Fetch enrollments
+    const { data: enrollmentsData, error: enrollmentsError } = await supabase
+      .from("company_enrollments")
+      .select("*");
+
+    if (enrollmentsError) {
+      console.error("Error fetching enrollments:", enrollmentsError);
+    }
+
+    setCompanies(companiesData || []);
+    setEnrollments(enrollmentsData || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
     fetchData();
   }, [supabaseUrl, supabaseAnonKey]);
 
-  // Sort companies
-  const sortedCompanies = useMemo(() => {
-    const sorted = [...companies];
+  // Build enrollment map: company_id -> list of play names
+  const enrollmentMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    enrollments.forEach((e) => {
+      const plays = map.get(e.company_id) || [];
+      plays.push(e.play_name);
+      map.set(e.company_id, plays);
+    });
+    return map;
+  }, [enrollments]);
 
-    sorted.sort((a, b) => {
+  // Filter and sort companies
+  const sortedCompanies = useMemo(() => {
+    let filtered = [...companies];
+
+    // Filter by play enrollment
+    if (filterPlay === "not-enrolled") {
+      filtered = filtered.filter((c) => !enrollmentMap.has(c.id));
+    } else if (filterPlay) {
+      filtered = filtered.filter((c) => enrollmentMap.get(c.id)?.includes(filterPlay));
+    }
+
+    // Sort
+    filtered.sort((a, b) => {
       const aVal = a[sortField];
       const bVal = b[sortField];
 
@@ -70,8 +115,8 @@ export default function CompaniesPage() {
       return sortDirection === "asc" ? comparison : -comparison;
     });
 
-    return sorted;
-  }, [companies, sortField, sortDirection]);
+    return filtered;
+  }, [companies, sortField, sortDirection, filterPlay, enrollmentMap]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -100,81 +145,55 @@ export default function CompaniesPage() {
     setSelectedIds(newSelected);
   };
 
-  const handleSendToEnrichment = async (workflow: DBDrivenEnrichmentWorkflow) => {
-    const dispatcherUrl = workflow.dispatcher_function_url;
+  const handleEnroll = async (playName: string) => {
+    if (!supabaseUrl || !supabaseAnonKey) return;
 
-    if (!dispatcherUrl) {
-      setSendResult({ success: false, message: "No dispatcher function URL configured for this workflow" });
-      setShowEnrichmentMenu(false);
+    setEnrolling(true);
+    setShowEnrollDropdown(false);
+    setActionResult(null);
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    // Filter out companies already enrolled in this play
+    const companiesToEnroll = Array.from(selectedIds).filter(
+      (id) => !enrollmentMap.get(id)?.includes(playName)
+    );
+
+    if (companiesToEnroll.length === 0) {
+      setActionResult({
+        success: false,
+        message: "All selected companies are already enrolled in this play.",
+      });
+      setEnrolling(false);
       return;
     }
 
-    const selectedCompanies = companies.filter((c) => selectedIds.has(c.id));
+    const enrollmentRecords = companiesToEnroll.map((companyId) => ({
+      company_id: companyId,
+      play_name: playName,
+      status: "active",
+    }));
 
-    setSending(true);
-    setShowEnrichmentMenu(false);
-    setSendResult(null);
+    const { error: insertError } = await supabase
+      .from("company_enrollments")
+      .insert(enrollmentRecords);
 
-    try {
-      // Always POST to dispatcher - it needs company data in the body
-      const response = await fetch(dispatcherUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${supabaseAnonKey}`,
-        },
-        body: JSON.stringify({
-          companies: selectedCompanies.map((c) => ({
-            company_id: c.id,
-            company_name: c.company_name,
-            company_domain: c.company_domain,
-            company_linkedin_url: c.company_linkedin_url,
-          })),
-          workflow: {
-            id: workflow.id,
-            title: workflow.title,
-            workflow_slug: workflow.workflow_slug,
-            destination_type: workflow.destination_type,
-            destination_endpoint_url: workflow.destination_endpoint_url,
-            receiver_function_url: workflow.receiver_function_url,
-          },
-        }),
+    if (insertError) {
+      setActionResult({
+        success: false,
+        message: `Error enrolling companies: ${insertError.message}`,
       });
-
-      if (response.ok) {
-        setSendResult({
-          success: true,
-          message: `Sent ${selectedCompanies.length} companies to "${workflow.title}" via dispatcher`
-        });
-        setSelectedIds(new Set());
-      } else {
-        const errorText = await response.text();
-        let errorDetails = `Status: ${response.status} ${response.statusText}`;
-        if (errorText) {
-          try {
-            const errorJson = JSON.parse(errorText);
-            errorDetails += `\n\nResponse: ${JSON.stringify(errorJson, null, 2)}`;
-          } catch {
-            errorDetails += `\n\nResponse: ${errorText}`;
-          }
-        }
-        errorDetails += `\n\nURL: ${dispatcherUrl}`;
-        setSendResult({ success: false, message: errorDetails });
-      }
-    } catch (err) {
-      let errorMessage = "Unknown error";
-      if (err instanceof Error) {
-        errorMessage = err.message;
-        if (err.name === "TypeError" && err.message === "Load failed") {
-          errorMessage = `Network error: Unable to reach the dispatcher function.\n\nPossible causes:\n• The edge function may not be deployed\n• CORS may be blocking the request\n• The function URL may be incorrect\n\nURL: ${dispatcherUrl}`;
-        } else if (err.stack) {
-          errorMessage += `\n\nStack trace:\n${err.stack}`;
-        }
-      }
-      setSendResult({ success: false, message: errorMessage });
-    } finally {
-      setSending(false);
+    } else {
+      setActionResult({
+        success: true,
+        message: `Successfully enrolled ${companiesToEnroll.length} companies in "${AVAILABLE_PLAYS.find(p => p.value === playName)?.label || playName}"`,
+      });
+      setSelectedIds(new Set());
+      // Refresh data
+      await fetchData();
     }
+
+    setEnrolling(false);
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -190,6 +209,27 @@ export default function CompaniesPage() {
 
   const isAllSelected = sortedCompanies.length > 0 && selectedIds.size === sortedCompanies.length;
   const isSomeSelected = selectedIds.size > 0 && selectedIds.size < sortedCompanies.length;
+
+  // Count companies per play
+  const playCounts = useMemo(() => {
+    const counts: Record<string, number> = { "not-enrolled": 0 };
+    AVAILABLE_PLAYS.forEach((p) => {
+      counts[p.value] = 0;
+    });
+
+    companies.forEach((c) => {
+      const plays = enrollmentMap.get(c.id);
+      if (!plays || plays.length === 0) {
+        counts["not-enrolled"]++;
+      } else {
+        plays.forEach((p) => {
+          counts[p] = (counts[p] || 0) + 1;
+        });
+      }
+    });
+
+    return counts;
+  }, [companies, enrollmentMap]);
 
   if (loading) {
     return (
@@ -216,8 +256,64 @@ export default function CompaniesPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Companies</h1>
         <span className="text-sm text-gray-500">
-          {companies.length} record{companies.length !== 1 ? "s" : ""}
+          {sortedCompanies.length} of {companies.length} companies
         </span>
+      </div>
+
+      {/* Filter Pills */}
+      <div className="mb-6">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setFilterPlay(null)}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+              filterPlay === null
+                ? "bg-blue-600 text-white"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+          >
+            All
+            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${
+              filterPlay === null ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600"
+            }`}>
+              {companies.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setFilterPlay("not-enrolled")}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+              filterPlay === "not-enrolled"
+                ? "bg-orange-600 text-white"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+          >
+            Not Enrolled
+            <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${
+              filterPlay === "not-enrolled" ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-600"
+            }`}>
+              {playCounts["not-enrolled"] || 0}
+            </span>
+          </button>
+
+          {AVAILABLE_PLAYS.map((play) => (
+            <button
+              key={play.value}
+              onClick={() => setFilterPlay(play.value)}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                filterPlay === play.value
+                  ? "bg-green-600 text-white"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }`}
+            >
+              {play.label}
+              <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${
+                filterPlay === play.value ? "bg-green-500 text-white" : "bg-gray-200 text-gray-600"
+              }`}>
+                {playCounts[play.value] || 0}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Action Bar */}
@@ -228,43 +324,24 @@ export default function CompaniesPage() {
           </span>
           <div className="relative">
             <button
-              onClick={() => setShowEnrichmentMenu(!showEnrichmentMenu)}
-              disabled={sending}
-              className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => setShowEnrollDropdown(!showEnrollDropdown)}
+              disabled={enrolling}
+              className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {sending ? "Sending..." : "Send to Enrichment"}
+              {enrolling ? "Enrolling..." : "Mark Eligible For..."}
             </button>
 
-            {showEnrichmentMenu && (
-              <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg z-10">
-                {workflows.length === 0 ? (
-                  <div className="p-4 text-sm text-gray-500">
-                    No active enrichment workflows.
-                    <br />
-                    <span className="text-xs">Add workflows in Admin → DB-Driven Enrichment Workflows</span>
-                  </div>
-                ) : (
-                  <div className="py-2">
-                    {workflows.map((workflow) => (
-                      <div key={workflow.id} className="px-4 py-2 hover:bg-gray-50">
-                        <div className="font-medium text-sm text-gray-900">{workflow.title}</div>
-                        {workflow.description && (
-                          <div className="text-xs text-gray-500 mb-2">{workflow.description}</div>
-                        )}
-                        {!workflow.dispatcher_function_url ? (
-                          <div className="text-xs text-red-500">No dispatcher function assigned</div>
-                        ) : (
-                          <button
-                            onClick={() => handleSendToEnrichment(workflow)}
-                            className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
-                          >
-                            Send
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+            {showEnrollDropdown && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-10">
+                {AVAILABLE_PLAYS.map((play) => (
+                  <button
+                    key={play.value}
+                    onClick={() => handleEnroll(play.value)}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 first:rounded-t-lg last:rounded-b-lg"
+                  >
+                    {play.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -278,13 +355,13 @@ export default function CompaniesPage() {
       )}
 
       {/* Result message */}
-      {sendResult && (
-        <div className={`mb-4 p-3 rounded-lg ${sendResult.success ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}>
-          <pre className={`whitespace-pre-wrap text-sm font-mono ${sendResult.success ? "text-green-800" : "text-red-800"}`}>
-            {sendResult.message}
-          </pre>
+      {actionResult && (
+        <div className={`mb-4 p-3 rounded-lg ${actionResult.success ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}>
+          <p className={`text-sm ${actionResult.success ? "text-green-800" : "text-red-800"}`}>
+            {actionResult.message}
+          </p>
           <button
-            onClick={() => setSendResult(null)}
+            onClick={() => setActionResult(null)}
             className="text-sm underline mt-2"
           >
             Dismiss
@@ -330,6 +407,9 @@ export default function CompaniesPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     LinkedIn
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Enrolled In
+                  </th>
                   <th
                     onClick={() => handleSort("created_at")}
                     className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
@@ -340,66 +420,85 @@ export default function CompaniesPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {sortedCompanies.map((company) => (
-                  <tr
-                    key={company.id}
-                    className={`hover:bg-gray-50 ${selectedIds.has(company.id) ? "bg-blue-50" : ""}`}
-                  >
-                    <td className="px-4 py-4">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(company.id)}
-                        onChange={() => handleSelectRow(company.id)}
-                        className="h-4 w-4 text-blue-600 border-gray-300 rounded cursor-pointer"
-                      />
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.company_name || "—"}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {company.company_domain ? (
-                        <a
-                          href={`https://${company.company_domain}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          {company.company_domain}
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {company.company_linkedin_url ? (
-                        <a
-                          href={company.company_linkedin_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          View
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {new Date(company.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
+                {sortedCompanies.map((company) => {
+                  const companyPlays = enrollmentMap.get(company.id) || [];
+                  return (
+                    <tr
+                      key={company.id}
+                      className={`hover:bg-gray-50 ${selectedIds.has(company.id) ? "bg-blue-50" : ""}`}
+                    >
+                      <td className="px-4 py-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(company.id)}
+                          onChange={() => handleSelectRow(company.id)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                        />
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {company.company_name || "—"}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {company.company_domain ? (
+                          <a
+                            href={`https://${company.company_domain}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            {company.company_domain}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {company.company_linkedin_url ? (
+                          <a
+                            href={company.company_linkedin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            View
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        {companyPlays.length === 0 ? (
+                          <span className="text-gray-400">—</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {companyPlays.map((play) => (
+                              <span
+                                key={play}
+                                className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                              >
+                                {AVAILABLE_PLAYS.find((p) => p.value === play)?.label || play}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {new Date(company.created_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {/* Click outside to close menu */}
-      {showEnrichmentMenu && (
+      {/* Click outside to close dropdown */}
+      {showEnrollDropdown && (
         <div
           className="fixed inset-0 z-0"
-          onClick={() => setShowEnrichmentMenu(false)}
+          onClick={() => setShowEnrollDropdown(false)}
         />
       )}
     </div>

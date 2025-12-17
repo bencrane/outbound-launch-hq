@@ -7,6 +7,26 @@ const outboundLaunchCards = [
     href: "/",
   },
   {
+    name: "End-to-End GTM Enrichment",
+    description: "Send companies through the full enrichment pipeline",
+    href: "/send-to-pipeline",
+  },
+  {
+    name: "Workflows",
+    description: "View and trigger enrichment workflows",
+    href: "/workflows",
+  },
+  {
+    name: "Enrichment Results",
+    description: "View results from enrichment workflows",
+    href: "/enrichment-results",
+  },
+  {
+    name: "People",
+    description: "View enriched people data",
+    href: "/people",
+  },
+  {
     name: "Upload Companies",
     description: "Import companies from CSV",
     href: "/admin/upload-companies",
@@ -91,6 +111,19 @@ const gtmTeaserCards = [
   },
 ];
 
+const legacyCards = [
+  {
+    name: "(outbound launch companies)",
+    description: "Manage companies in Outbound Launch DB",
+    href: "/companies",
+  },
+  {
+    name: "(enrichment eligible companies)",
+    description: "Companies eligible for enrichment (GTM Teaser DB)",
+    href: "/hq-target-companies",
+  },
+];
+
 function CardGrid({ cards }: { cards: typeof outboundLaunchCards }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -123,11 +156,18 @@ export default function AdminPage() {
         <CardGrid cards={outboundLaunchCards} />
       </section>
 
-      <section>
+      <section className="mb-10">
         <h2 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
           GTM Teaser Demo DB
         </h2>
         <CardGrid cards={gtmTeaserCards} />
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-500 mb-4 pb-2 border-b border-gray-200">
+          Legacy Pages
+        </h2>
+        <CardGrid cards={legacyCards} />
       </section>
     </div>
   );

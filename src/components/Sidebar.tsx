@@ -6,13 +6,13 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { name: "Admin", href: "/admin" },
   { name: "Dashboard", href: "/" },
-  { name: "Workflows", href: "/workflows" },
+  { name: "Companies", href: "/companies" },
+  { name: "Manual GTM Enrichment Stages", href: "/manual-gtm-enrichment" },
+  { name: "Pipeline Monitor", href: "/admin/pipeline-monitor" },
+  { name: "End-to-End GTM Enrichment", href: "/send-to-pipeline" },
   { name: "Manage Workflows", href: "/admin/manage-workflows" },
-  { name: "Outbound Launch Companies", href: "/companies" },
-  { name: "Enrichment Eligible Companies", href: "/hq-target-companies", muted: true },
   { name: "Pipeline Status", href: "/admin/pipeline-status" },
   { name: "Enrichment Results", href: "/enrichment-results" },
-  { name: "People", href: "/people" },
 ];
 
 export function Sidebar() {
