@@ -67,28 +67,43 @@ See `docs/POST_MORTEM_2025_12_17_COMPANY_ID_MISMATCH.md` for what happens when t
 
 ---
 
-## Current Project State (2025-12-17)
+## Current Project State (2025-12-18)
 
-### What's Working
+### CRITICAL PRINCIPLE
 
-**Enrichment Pipeline Steps 1-4 are fully functional:**
+**"DB IS SOURCE OF TRUTH"**
+
+All configuration comes from the database, not hardcoded in code:
+- Edge function names → `destination_config.edge_function_name`
+- Source table/columns → `destination_config.source_config`
+- Destination table/fields → `destination_config.destinations`
+- Endpoint URLs → `destination_config.destination_endpoint_url`
+
+### Current Workflow Steps
 
 | Step | Name | Edge Function | Status |
 |------|------|---------------|--------|
 | 1 | Scrape Homepage | `scrape_homepage_v1` | ✅ Working |
-| 2 | Clean Homepage HTML | `clean_homepage_v1` | ✅ Working |
-| 3 | Find Case Studies Page URL | `find_case_studies_page_v1` | ✅ Working |
-| 4 | Scrape Case Studies Page | `scrape_case_studies_page_v1` | ✅ Working |
+| 2 | Find Case Studies Page URL | `find_case_studies_page_v1` | 🔄 Config-driven, needs testing |
+| 3 | Scrape Case Studies Page | `scrape_case_studies_page_v1` | Needs testing |
+| 4 | Extract Specific Case Study URLs | `extract_case_study_urls_v1` | Needs testing |
+| 5 | Extract Buyer Details via Clay | `extract_buyer_details_v1` | Needs testing |
+| 6 | Get Buyer LinkedIn URL | `get_buyer_linkedin_url_v1` | Needs testing |
+| 7 | Enrich LinkedIn Profile | `enrich_linkedin_profile_v1` | Needs testing |
 
-**Data Flow:**
+**Data Flow (new - autoparse, no cleaning steps):**
 ```
-Homepage HTML → Cleaned HTML + Links → Case Studies Page URL → Case Studies Page HTML
+Homepage (autoparse) → Case Studies Page URL (AI) → Scrape Case Studies → Extract URLs → Extract Buyers
 ```
 
-### What's Next
+### What Was Just Changed (2025-12-18)
 
-- **Step 5:** Clean case studies page HTML (extract links, text)
-- **Step 6+:** Extract individual case study URLs, scrape each, extract buyer details
+1. **Deprecated n8n cleaning workflows** - Zenrows autoparse returns structured data
+2. **Dropped tables:** `company_homepage_cleaned`, `case_studies_page_cleaned`
+3. **Renumbered workflows** - Steps are now 1-7 continuous
+4. **Added `edge_function_name`** to all workflow configs in DB
+5. **Updated UI** to read edge function from DB instead of hardcoded mapping
+6. **Reset all data** - Clean slate for testing
 
 ### Test Companies (3 enrolled in "case-study-champions" play)
 
@@ -148,9 +163,9 @@ Always check the most recent date section in `UPDATES.md` for:
 │  Purpose: Enrichment Data Storage                                │
 │                                                                  │
 │  Key Tables:                                                     │
-│  - company_homepage_scrapes     (Step 1 output)                  │
-│  - company_homepage_cleaned     (Step 2 output)                  │
-│  - (future step outputs...)                                      │
+│  - company_homepage_scrapes     (Step 1 - autoparse data)        │
+│  - company_case_studies_page    (Step 2 output)                  │
+│  - (other step outputs...)                                       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

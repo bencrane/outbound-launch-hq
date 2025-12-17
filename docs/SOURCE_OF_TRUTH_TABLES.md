@@ -58,8 +58,8 @@ Audit trail of every enrichment attempt.
 ### Destination Tables (Workspace)
 
 Actual enrichment data. Examples:
-- `company_homepage_scrapes` (Step 1)
-- `company_homepage_cleaned` (Step 2)
+- `company_homepage_scrapes` (Step 1 - autoparse structured data)
+- `company_case_studies_page` (Step 2)
 
 **Critical Rule:** A record in `company_play_step_completions` should NEVER exist without corresponding data in the destination table.
 

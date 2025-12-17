@@ -16,7 +16,7 @@ The enrichment system processes companies through a series of workflow steps. Ea
 | Database | Purpose | Examples |
 |----------|---------|----------|
 | **HQ (Outbound Launch HQ)** | Command center, orchestration, logging | `companies`, `db_driven_enrichment_workflows`, `enrichment_results_log`, `company_play_step_completions` |
-| **Workspace** | Enrichment data storage | `company_homepage_scrapes`, `company_homepage_cleaned` |
+| **Workspace** | Enrichment data storage | `company_homepage_scrapes`, `company_case_studies_page` |
 
 ---
 

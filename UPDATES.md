@@ -889,10 +889,165 @@ const stepToEdgeFunction: Record<number, string> = {
 
 ---
 
-### Next Steps
+---
 
-- Complete Step 7 testing (Clay → receiver → storage)
-- Step 8+: Get buyer LinkedIn URL, enrich profile, find contacts at past employers
+## 2025-12-18 - Architecture Cleanup & Config-Driven Transition
+
+### Major Changes
+
+#### 1. Deprecated Old Cleaning Workflows
+
+**Removed from active pipeline:**
+- `clean-homepage-html-via-n8n` (was Step 2)
+- `clean-case-studies-page-html-via-n8n` (was Step 5)
+
+**Reason:** Switched to Zenrows autoparse which returns structured data (links, bodyText, title, socialLinks) instead of raw HTML. No need for n8n cleaning step anymore.
+
+**Deleted Tables (Workspace DB):**
+- `company_homepage_cleaned` - dropped
+- `case_studies_page_cleaned` - dropped
+
+Migration file: `supabase/migrations-gtm-teaser/20251218_drop_deprecated_cleaning_tables.sql`
+
+#### 2. Workflow Renumbering
+
+Active workflows are now numbered continuously:
+
+| Step | Workflow | Edge Function |
+|------|----------|---------------|
+| 1 | Scrape Homepage | `scrape_homepage_v1` |
+| 2 | Find Case Studies Page URL | `find_case_studies_page_v1` |
+| 3 | Scrape Case Studies Page | `scrape_case_studies_page_v1` |
+| 4 | Extract Specific Case Study URLs | `extract_case_study_urls_v1` |
+| 5 | Extract Buyer Details via Clay | `extract_buyer_details_v1` |
+| 6 | Get Buyer LinkedIn URL | `get_buyer_linkedin_url_v1` |
+| 7 | Enrich LinkedIn Profile | `enrich_linkedin_profile_v1` |
+| 10 | Expand ICP Job Titles | `expand_icp_job_titles_v1` |
+| 11 | Find Contacts at Past Employers | `find_contacts_at_past_employers_v1` |
+| 12 | Enrich Past Employer Companies | `enrich_past_employer_companies_v1` |
+
+#### 3. Config-Driven Edge Function Names
+
+**Problem:** UI had hardcoded mapping of step numbers to edge function names. This caused bugs when workflows were renumbered.
+
+**Solution:** Added `edge_function_name` to each workflow's `destination_config` in the database.
+
+**Example destination_config:**
+```json
+{
+  "edge_function_name": "find_case_studies_page_v1",
+  "source_config": {
+    "db": "workspace",
+    "table": "company_homepage_scrapes",
+    "select_columns": ["homepage_links"]
+  },
+  "destinations": [{
+    "db": "workspace",
+    "table": "company_case_studies_page",
+    "fields": {"case_studies_page_url": "case_studies_page_url"}
+  }],
+  "destination_endpoint_url": "https://api.clay.com/v3/sources/webhook/...",
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clay_receiver_v1",
+  "storage_worker_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/storage_worker_v2"
+}
+```
+
+**UI Update:** `src/app/manual-gtm-enrichment/page.tsx` now reads `edge_function_name` from workflow config instead of hardcoded mapping.
+
+#### 4. Step 2 Refactored - Config-Driven Source
+
+**Edge Function:** `find_case_studies_page_v1`
+
+**Before:** Hardcoded to read from specific table
+**After:** Reads `source_config` from workflow config:
+- `source_config.db` - which database ("workspace" or "hq")
+- `source_config.table` - which table to read from
+- `source_config.select_columns` - which columns to fetch and pass to endpoint
+
+**Flow:**
+1. UI calls edge function with companies + workflow.id
+2. Edge function looks up workflow config from DB
+3. Reads source data from configured table
+4. POSTs to `destination_endpoint_url` (Clay webhook)
+5. Clay processes and calls back to `receiver_function_url`
+6. Receiver → storage_worker → logger
+
+#### 5. Data Reset
+
+All historical enrichment data deleted for clean testing:
+
+**HQ DB (cleared):**
+- `enrichment_results_log`
+- `company_play_step_completions`
+- `enrichment_batches`
+
+**Workspace DB (cleared):**
+- `company_homepage_scrapes`
+- `company_case_studies_page`
+- `company_specific_case_study_urls`
+- `case_study_scrapes`
+
+---
+
+### Current State (Handoff)
+
+**What's Working:**
+- Step 1 (Scrape Homepage via Zenrows) - ✅ Tested, autoparse returns structured data
+- DB is properly configured with `edge_function_name` in all workflow configs
+
+**In Progress (INCOMPLETE):**
+- UI update to read `edge_function_name` from workflow config - **PARTIALLY DONE**
+  - `WorkflowStep` interface updated ✅
+  - Query updated to fetch `destination_config` ✅
+  - Hardcoded mapping removed ✅
+  - **NOT TESTED** - user interrupted before testing
+
+**What Needs Testing:**
+- Step 2 end-to-end: UI → find_case_studies_page_v1 → Clay webhook → callback → storage
+- Verify UI correctly reads edge function name from DB
+
+---
+
+### Key Principle (USER EMPHASIZED)
+
+**"DB IS SOURCE OF TRUTH"**
+
+All configuration should come from the database, not hardcoded in code:
+- Edge function names → `destination_config.edge_function_name`
+- Source table/columns → `destination_config.source_config`
+- Destination table/fields → `destination_config.destinations`
+- Endpoint URLs → `destination_config.destination_endpoint_url`
+
+---
+
+### Files Modified This Session
+
+| File | Changes |
+|------|---------|
+| `src/app/manual-gtm-enrichment/page.tsx` | Removed hardcoded mapping, reads edge_function_name from workflow |
+| `supabase/functions/find_case_studies_page_v1/index.ts` | Refactored to be fully config-driven |
+| `docs/SOURCE_OF_TRUTH_TABLES.md` | Removed references to deleted tables |
+| `docs/AI_ONBOARDING.md` | Updated key tables |
+| `docs/RESETTING_ENRICHMENT_STATE.md` | Updated step table and examples |
+| `docs/ENRICHMENT_SYSTEM_ARCHITECTURE.md` | Updated Workspace DB examples |
+
+---
+
+### Struggles / Issues Encountered
+
+1. **Hardcoded mappings causing silent failures** - Step 2 wasn't working because UI called wrong edge function after workflow renumbering
+
+2. **Need to be more systematic** - User frustrated that changes were made without thinking through full implications
+
+3. **Config updates require function deployment** - Updating DB config alone doesn't help if the edge function still has old hardcoded logic
+
+---
+
+### Next Steps for New AI Instance
+
+1. **Test Step 2 end-to-end** - Send a company through from UI, verify it reaches Clay webhook
+2. **Test remaining steps** - Steps 3-7 need validation with new workflow numbering
+3. **Follow the principle** - DB is source of truth. Don't hardcode anything.
 
 ---
 

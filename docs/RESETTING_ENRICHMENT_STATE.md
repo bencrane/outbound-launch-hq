@@ -52,14 +52,14 @@ The destination table depends on the step:
 | Step | Destination Table |
 |------|-------------------|
 | 1. Scrape Homepage | `company_homepage_scrapes` |
-| 2. Clean Homepage | `company_homepage_cleaned` |
-| 3+ | Check workflow config |
+| 2. Find Case Studies Page | `company_case_studies_page` |
+| 3+ | Check workflow config in `destination_config.destinations[].table` |
 
 ```bash
 GTM_KEY="your-workspace-anon-key"
 
-# Example: Delete from company_homepage_cleaned
-curl -s -X DELETE "https://kwxdezafluqhcmovnwbn.supabase.co/rest/v1/company_homepage_cleaned?company_domain=eq.{DOMAIN}" \
+# Example: Delete from company_homepage_scrapes
+curl -s -X DELETE "https://kwxdezafluqhcmovnwbn.supabase.co/rest/v1/company_homepage_scrapes?company_domain=eq.{DOMAIN}" \
   -H "apikey: $GTM_KEY" \
   -H "Authorization: Bearer $GTM_KEY"
 ```
@@ -98,8 +98,8 @@ curl -s -X DELETE "https://wvjhddcwpedmkofmhfcp.supabase.co/rest/v1/enrichment_r
 curl -s -X DELETE "https://wvjhddcwpedmkofmhfcp.supabase.co/rest/v1/company_play_step_completions?company_id=eq.$COMPANY_ID&step_number=eq.2" \
   -H "apikey: $API_KEY" -H "Authorization: Bearer $API_KEY"
 
-# 2. Delete from Workspace table
-curl -s -X DELETE "https://kwxdezafluqhcmovnwbn.supabase.co/rest/v1/company_homepage_cleaned?company_domain=eq.nostra.ai" \
+# 2. Delete from Workspace table (example: Step 1 destination)
+curl -s -X DELETE "https://kwxdezafluqhcmovnwbn.supabase.co/rest/v1/company_homepage_scrapes?company_domain=eq.nostra.ai" \
   -H "apikey: $GTM_KEY" -H "Authorization: Bearer $GTM_KEY"
 ```
 

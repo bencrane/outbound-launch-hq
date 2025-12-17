@@ -10,6 +10,7 @@ interface WorkflowStep {
   step: number;
   slug: string;
   title: string;
+  edge_function_name?: string;
 }
 
 type SortField = "company_name" | "company_domain" | "created_at";
@@ -68,7 +69,7 @@ export default function ManualGTMEnrichmentPage() {
       // Fetch workflow steps
       const { data: workflows, error: workflowError } = await supabase
         .from("db_driven_enrichment_workflows")
-        .select("id, overall_step_number, workflow_slug, title")
+        .select("id, overall_step_number, workflow_slug, title, destination_config")
         .not("overall_step_number", "is", null)
         .neq("status", "deprecated")
         .order("overall_step_number", { ascending: true });
@@ -82,6 +83,7 @@ export default function ManualGTMEnrichmentPage() {
             step: w.overall_step_number,
             slug: w.workflow_slug,
             title: w.title,
+            edge_function_name: w.destination_config?.edge_function_name,
           }))
         );
       }
@@ -299,17 +301,6 @@ export default function ManualGTMEnrichmentPage() {
     setSelectedIds(newSelected);
   };
 
-  // Map step numbers to edge function names
-  const stepToEdgeFunction: Record<number, string> = {
-    1: "scrape_homepage_v1",
-    2: "clean_homepage_v1",
-    3: "find_case_studies_page_v1",
-    4: "scrape_case_studies_page_v1",
-    5: "clean_case_studies_page_v1",
-    6: "extract_case_study_urls_v1",
-    7: "scrape_case_study_url_v1",
-  };
-
   const handleConfirmSend = async () => {
     if (!supabaseAnonKey || selectedStep === null) return;
 
@@ -325,12 +316,12 @@ export default function ManualGTMEnrichmentPage() {
       return;
     }
 
-    // Get the edge function for this step
-    const edgeFunctionName = stepToEdgeFunction[selectedStep];
+    // Get the edge function from the workflow config (DB is source of truth)
+    const edgeFunctionName = workflow.edge_function_name;
     if (!edgeFunctionName) {
       setSendResult({
         success: false,
-        message: `No edge function configured for step ${selectedStep}. Manual processing required.`
+        message: `No edge_function_name configured in destination_config for step ${selectedStep}. Update the workflow config in the database.`
       });
       return;
     }
