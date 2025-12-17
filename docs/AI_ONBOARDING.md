@@ -12,8 +12,29 @@ Before doing ANY work, read these files:
 |---|------|-----|
 | 1 | `docs/SOURCE_OF_TRUTH_TABLES.md` | **MISSION CRITICAL** - Which tables control what |
 | 2 | `docs/ENRICHMENT_SYSTEM_ARCHITECTURE.md` | How the pipeline works |
-| 3 | This file | Project overview |
-| 4 | `UPDATES.md` | Development changelog - **check latest date for current state** |
+| 3 | `docs/RESETTING_ENRICHMENT_STATE.md` | **CRITICAL** - How to properly reset/delete enrichment data |
+| 4 | This file | Project overview |
+| 5 | `UPDATES.md` | Development changelog - **check latest date for current state** |
+
+---
+
+## CRITICAL: Resetting Enrichment State
+
+**When the user asks to "delete", "reset", or "re-run" enrichment data for any step:**
+
+1. **ALWAYS** consult `docs/RESETTING_ENRICHMENT_STATE.md` FIRST
+2. **NEVER** delete only from the destination table
+3. **ALWAYS** delete from ALL THREE locations:
+
+| Table | Database | Purpose |
+|-------|----------|---------|
+| `enrichment_results_log` | HQ | Audit trail of attempts |
+| `company_play_step_completions` | HQ | **Controls UI state** |
+| Destination table (varies by step) | Workspace | Actual data |
+
+**If you only delete the data but not the tracking records, the UI will show incorrect state.**
+
+See `docs/POST_MORTEM_2025_12_17_INCOMPLETE_RESET.md` for what happens when this is done wrong.
 
 ---
 

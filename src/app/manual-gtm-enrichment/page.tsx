@@ -34,6 +34,8 @@ export default function ManualGTMEnrichmentPage() {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
   const [selectedStep, setSelectedStep] = useState<number | null>(null); // null = show all
+  const [stepDataMap, setStepDataMap] = useState<Map<string, { hasRequiredData: boolean }>>(new Map());
+  const [hideNoData, setHideNoData] = useState(false);
   const [isTestMode, setIsTestMode] = useState(() => {
     // Load from localStorage, default to true (test mode) if not set
     if (typeof window !== "undefined") {
@@ -49,6 +51,8 @@ export default function ManualGTMEnrichmentPage() {
   }, [isTestMode]);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_URL;
+  const workspaceUrl = process.env.NEXT_PUBLIC_GTM_TEASER_DB_URL;
+  const workspaceAnonKey = process.env.NEXT_PUBLIC_GTM_TEASER_DB_ANON_KEY;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_OUTBOUND_LAUNCH_DB_ANON_KEY;
 
   useEffect(() => {
@@ -169,6 +173,38 @@ export default function ManualGTMEnrichmentPage() {
     fetchData();
   }, [supabaseUrl, supabaseAnonKey]);
 
+  // Fetch step-specific data (e.g., case_studies_page_url for Step 4)
+  useEffect(() => {
+    async function fetchStepData() {
+      if (!workspaceUrl || !workspaceAnonKey) return;
+
+      // Step 4 needs case_studies_page_url from company_case_studies_page
+      if (selectedStep === 4) {
+        const workspace = createClient(workspaceUrl, workspaceAnonKey);
+        const { data, error } = await workspace
+          .from("company_case_studies_page")
+          .select("company_domain, case_studies_page_url");
+
+        if (error) {
+          console.error("Error fetching step data:", error);
+          return;
+        }
+
+        const newMap = new Map<string, { hasRequiredData: boolean }>();
+        (data || []).forEach((row) => {
+          newMap.set(row.company_domain, {
+            hasRequiredData: row.case_studies_page_url !== null && row.case_studies_page_url !== ""
+          });
+        });
+        setStepDataMap(newMap);
+      } else {
+        setStepDataMap(new Map());
+      }
+    }
+
+    fetchStepData();
+  }, [selectedStep, workspaceUrl, workspaceAnonKey]);
+
   // Filter and sort companies
   const sortedCompanies = useMemo(() => {
     // Filter by selected step (show companies ready for that step = completed previous step)
@@ -177,6 +213,14 @@ export default function ManualGTMEnrichmentPage() {
       // Companies ready for step N have last_completed_step = N-1
       const requiredPriorStep = selectedStep - 1;
       filtered = filtered.filter((c) => (c.last_completed_step ?? 0) === requiredPriorStep);
+
+      // Filter out companies without required data if hideNoData is enabled
+      if (hideNoData && stepDataMap.size > 0) {
+        filtered = filtered.filter((c) => {
+          const stepData = stepDataMap.get(c.company_domain || "");
+          return stepData?.hasRequiredData !== false;
+        });
+      }
     }
 
     // Sort
@@ -192,7 +236,7 @@ export default function ManualGTMEnrichmentPage() {
     });
 
     return filtered;
-  }, [companies, sortField, sortDirection, selectedStep]);
+  }, [companies, sortField, sortDirection, selectedStep, hideNoData, stepDataMap]);
 
   // Count companies per step (for pill badges)
   const stepCounts = useMemo(() => {
@@ -214,6 +258,19 @@ export default function ManualGTMEnrichmentPage() {
     counts[0] = companies.length; // Show all count
     return counts;
   }, [companies, workflowSteps]);
+
+  // Count companies with/without required data for current step
+  const noDataCount = useMemo(() => {
+    if (selectedStep !== 4 || stepDataMap.size === 0) return 0;
+
+    const requiredPriorStep = selectedStep - 1;
+    const readyCompanies = companies.filter((c) => (c.last_completed_step ?? 0) === requiredPriorStep);
+
+    return readyCompanies.filter((c) => {
+      const stepData = stepDataMap.get(c.company_domain || "");
+      return stepData?.hasRequiredData === false;
+    }).length;
+  }, [selectedStep, companies, stepDataMap]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -248,6 +305,7 @@ export default function ManualGTMEnrichmentPage() {
     2: "clean_homepage_v1",
     3: "find_case_studies_page_v1",
     4: "scrape_case_studies_page_v1",
+    5: "clean_case_studies_page_v1",
     // Add more steps as they're built
   };
 
@@ -448,9 +506,24 @@ export default function ManualGTMEnrichmentPage() {
           ))}
         </div>
         {selectedStep !== null && (
-          <p className="mt-2 text-sm text-gray-500">
-            Showing companies ready for step {selectedStep} (completed step {selectedStep - 1})
-          </p>
+          <div className="mt-2 flex items-center gap-4">
+            <p className="text-sm text-gray-500">
+              Showing companies ready for step {selectedStep} (completed step {selectedStep - 1})
+            </p>
+            {selectedStep === 4 && noDataCount > 0 && (
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideNoData}
+                  onChange={(e) => setHideNoData(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 border-gray-300 rounded"
+                />
+                <span className="text-gray-600">
+                  Hide {noDataCount} with no URL
+                </span>
+              </label>
+            )}
+          </div>
         )}
       </div>
 
@@ -613,7 +686,20 @@ export default function ManualGTMEnrichmentPage() {
                       />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.company_name || "—"}
+                      <span className="flex items-center gap-2">
+                        {company.company_name || "—"}
+                        {selectedStep === 4 && stepDataMap.size > 0 && (() => {
+                          const stepData = stepDataMap.get(company.company_domain || "");
+                          if (stepData?.hasRequiredData === false) {
+                            return (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+                                No URL
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                       {company.company_domain ? (

@@ -26,9 +26,9 @@ interface RequestBody {
   use_test_endpoint?: boolean;
 }
 
-const N8N_WEBHOOK_URL_PROD = "https://n8n-mission-control.onrender.com/webhook/n8n-jobs-manager-clean-scraped-homepage-content";
-const N8N_WEBHOOK_URL_TEST = "https://n8n-mission-control.onrender.com/webhook-test/n8n-jobs-manager-clean-scraped-homepage-content";
-const RECEIVER_URL = "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clean_homepage_receiver_v1";
+const N8N_WEBHOOK_URL_PROD = "https://n8n-mission-control.onrender.com/webhook/n8n-jobs-manager-clean-main-case-studies-page-content";
+const N8N_WEBHOOK_URL_TEST = "https://n8n-mission-control.onrender.com/webhook-test/n8n-jobs-manager-clean-main-case-studies-page-content";
+const RECEIVER_URL = "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clean_case_studies_page_receiver_v1";
 
 serve(async (req) => {
   // Handle CORS preflight
@@ -74,7 +74,7 @@ serve(async (req) => {
       .insert({
         play_name,
         step_number,
-        step_name: "Clean Homepage HTML",
+        step_name: "Clean Case Studies Page HTML",
         provider: "n8n",
         records_sent: companies.length,
         records_received: 0,
@@ -99,20 +99,21 @@ serve(async (req) => {
     // 2. Fire off requests to n8n for each company (don't wait for processing)
     for (const company of companies) {
       try {
-        // First, fetch the raw HTML from Workspace DB (from Step 1)
+        // Fetch the scraped case studies page HTML from Workspace DB (from Step 4)
         const { data: scrapeData, error: scrapeError } = await workspaceClient
-          .from("company_homepage_scrapes")
-          .select("homepage_html")
+          .from("case_studies_page_scrapes")
+          .select("case_studies_page_html, case_studies_page_url")
           .eq("company_domain", company.company_domain)
           .single();
 
         if (scrapeError || !scrapeData) {
-          throw new Error(`No scraped HTML found for ${company.company_domain}. Run Step 1 first.`);
+          throw new Error(`No scraped case studies page found for ${company.company_domain}. Run Step 4 first.`);
         }
 
         // Fire to n8n with callback info (don't await the processing result)
         const n8nPayload = {
-          raw_html: scrapeData.homepage_html,
+          raw_html: scrapeData.case_studies_page_html,
+          case_studies_page_url: scrapeData.case_studies_page_url,
           company_id: company.company_id,
           company_name: company.company_name,
           company_domain: company.company_domain,
@@ -173,7 +174,7 @@ serve(async (req) => {
 
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
-    console.error("Error in clean_homepage_v1:", errorMessage);
+    console.error("Error in clean_case_studies_page_v1:", errorMessage);
     return new Response(
       JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
