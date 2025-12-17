@@ -306,7 +306,8 @@ export default function ManualGTMEnrichmentPage() {
     3: "find_case_studies_page_v1",
     4: "scrape_case_studies_page_v1",
     5: "clean_case_studies_page_v1",
-    // Add more steps as they're built
+    6: "extract_case_study_urls_v1",
+    7: "scrape_case_study_url_v1",
   };
 
   const handleConfirmSend = async () => {

@@ -664,10 +664,235 @@ const stepToEdgeFunction: Record<number, string> = {
 
 ---
 
+---
+
+## 2025-12-17 (Continued) - Steps 5, 6, 7
+
+### Step 5: Clean Case Studies Page HTML (AI)
+
+**Edge Functions:**
+- `clean_case_studies_page_v1` - Dispatcher/AI processor
+- `clean_case_studies_page_receiver_v1` - Receiver (stores results)
+
+**Purpose:** Clean raw HTML from case studies page scrapes, extract just the href values from anchor tags.
+
+**Source Table (Workspace):** `case_studies_page_scrapes`
+**Destination Table (Workspace):** `case_studies_page_cleaned`
+
+```sql
+CREATE TABLE case_studies_page_cleaned (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL,
+  company_domain TEXT NOT NULL,
+  company_name TEXT,
+  case_studies_page_url TEXT,
+  cleaned_content TEXT,  -- Extracted href values
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT unique_company_domain_cs_cleaned UNIQUE (company_domain)
+);
+```
+
+---
+
+### Step 6: Extract Specific Case Study URLs (AI)
+
+**Edge Function:** `extract_case_study_urls_v1`
+
+**Purpose:** AI analyzes href values from cleaned case studies page, identifies URLs that point to individual case study pages (not blog posts, not category pages).
+
+**Source Table (Workspace):** `case_studies_page_cleaned`
+**Destination Table (Workspace):** `company_specific_case_study_urls`
+
+```sql
+CREATE TABLE company_specific_case_study_urls (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL,
+  company_domain TEXT NOT NULL,
+  company_name TEXT,
+  case_study_url TEXT NOT NULL,
+  case_study_text TEXT,  -- Link text if available
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT unique_case_study_url UNIQUE (company_domain, case_study_url)
+);
+```
+
+**Key insight:** One company → many case study URLs. This is the first step that produces multiple rows per company.
+
+---
+
+### Step 7: Extract Buyer Details via Clay (IN PROGRESS)
+
+**Edge Function:** `scrape_case_study_url_v1` - Dispatcher to Clay
+
+**Purpose:** Send each case study URL to Clay. Clay uses Claygent to read the page and extract the buyer's details (the champion featured in the case study).
+
+**Source Table (Workspace):** `company_specific_case_study_urls`
+**Destination Table (Workspace):** `case_study_buyer_details`
+
+```sql
+CREATE TABLE case_study_buyer_details (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL,
+  company_domain TEXT NOT NULL,
+  company_name TEXT,
+  case_study_url TEXT NOT NULL,
+  buyer_full_name TEXT,
+  buyer_first_name TEXT,
+  buyer_last_name TEXT,
+  buyer_job_title TEXT,
+  buyer_company_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT unique_case_study_buyer UNIQUE (company_domain, case_study_url)
+);
+```
+
+**Clay Webhook:** `https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-2fa75b82-757c-4de8-9a72-441791e9725f`
+
+**Fields Clay extracts:**
+- `buyer_full_name` - Full name of the person featured
+- `buyer_first_name` - First name
+- `buyer_last_name` - Last name
+- `buyer_job_title` - Their job title
+- `buyer_company_name` - The company they work for (the customer)
+
+---
+
+### Major Architecture Update: `destination_config` Consolidation
+
+**Problem:** Workflow config had separate columns for `storage_worker_function_url`, `receiver_function_url`, etc. This was messy and required schema changes for new fields.
+
+**Solution:** Consolidated all destination-related config into a single `destination_config` JSONB column.
+
+**New `destination_config` structure:**
+```json
+{
+  "destinations": [
+    {
+      "db": "workspace",
+      "table": "case_study_buyer_details",
+      "fields": {
+        "case_study_url": "case_study_url",
+        "buyer_full_name": "buyer_full_name",
+        "buyer_job_title": "buyer_job_title"
+      },
+      "on_conflict": "company_domain,case_study_url"
+    }
+  ],
+  "clay_webhook_url": "https://api.clay.com/...",
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clay_receiver_v1",
+  "storage_worker_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/storage_worker_v2"
+}
+```
+
+**Benefits:**
+- Single source of truth for workflow routing
+- No schema changes needed for new config options
+- Clean separation: workflow metadata in columns, routing/storage config in JSON
+
+---
+
+### New Edge Function: `clay_receiver_v1`
+
+**Why created:** `master_receiver_v1` had persistent CDN caching issues. Despite correct local code and multiple deploys (including delete + redeploy), Supabase kept serving old cached code that referenced non-existent columns.
+
+**Solution:** Created fresh function with new name to bypass CDN cache entirely.
+
+**Location:** `supabase/functions/clay_receiver_v1/index.ts`
+
+**Functionality:**
+1. Receives webhook callback from Clay
+2. Looks up `workflow_id` in `db_driven_enrichment_workflows`
+3. Reads `storage_worker_function_url` from `destination_config`
+4. Forwards payload to storage worker
+5. Supports both single record and array modes (for workflows returning multiple people)
+
+---
+
+### Updated: `storage_worker_v2` - Flat Payload Support
+
+**Problem:** Storage worker required nested `data` wrapper:
+```json
+{
+  "workflow_id": "...",
+  "company_id": "...",
+  "data": { "buyer_full_name": "..." }  // Required wrapper
+}
+```
+
+But Clay sends flat payloads naturally:
+```json
+{
+  "workflow_id": "...",
+  "company_id": "...",
+  "buyer_full_name": "..."  // Flat, no wrapper
+}
+```
+
+**Fix:** Updated storage worker to accept both formats. If no `data` wrapper exists, extracts data fields from flat payload automatically.
+
+---
+
+### Complete Pipeline (Steps 1-7)
+
+```
+Step 1: Scrape Homepage (Zenrows)
+  └─→ company_homepage_scrapes
+       ↓
+Step 2: Clean Homepage HTML (AI)
+  └─→ company_homepage_cleaned
+       ↓
+Step 3: Find Case Studies Page URL (AI)
+  └─→ company_case_studies_page
+       ↓
+Step 4: Scrape Case Studies Page (Zenrows)
+  └─→ case_studies_page_scrapes
+       ↓
+Step 5: Clean Case Studies Page HTML (AI)
+  └─→ case_studies_page_cleaned
+       ↓
+Step 6: Extract Case Study URLs (AI)
+  └─→ company_specific_case_study_urls (multiple rows per company)
+       ↓
+Step 7: Extract Buyer Details (Clay + Claygent) ← IN PROGRESS
+  └─→ case_study_buyer_details
+```
+
+---
+
+### UI Updates
+
+**Manual GTM Enrichment Page** - Updated `stepToEdgeFunction`:
+```typescript
+const stepToEdgeFunction: Record<number, string> = {
+  1: "scrape_homepage_v1",
+  2: "clean_homepage_v1",
+  3: "find_case_studies_page_v1",
+  4: "scrape_case_studies_page_v1",
+  5: "clean_case_studies_page_v1",
+  6: "extract_case_study_urls_v1",
+  7: "scrape_case_study_url_v1",
+};
+```
+
+---
+
+### Debugging Notes
+
+**Supabase Edge Function CDN Caching:**
+- Edge functions can get stuck serving old code even after deploy
+- Delete + redeploy doesn't always fix it
+- **Workaround:** Create new function with different name (e.g., `clay_receiver_v1` instead of `master_receiver_v1`)
+
+**Clay Payload Format:**
+- Clay sends flat JSON payloads
+- Don't require nested wrappers - handle flat format natively
+
+---
+
 ### Next Steps
 
-- Step 5: Clean case studies page HTML (AI)
-- Step 6+: Extract individual case study URLs, scrape each, extract buyer details
+- Complete Step 7 testing (Clay → receiver → storage)
+- Step 8+: Get buyer LinkedIn URL, enrich profile, find contacts at past employers
 
 ---
 

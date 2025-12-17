@@ -38,6 +38,35 @@ See `docs/POST_MORTEM_2025_12_17_INCOMPLETE_RESET.md` for what happens when this
 
 ---
 
+## CRITICAL: Company ID/Domain Verification
+
+**Mixing company IDs with wrong domains is a DATA INTEGRITY VIOLATION.**
+
+When testing, debugging, or constructing ANY payload that includes `company_id`:
+
+1. **NEVER** assume a company_id belongs to a specific domain
+2. **NEVER** use IDs from conversation context without verification
+3. **ALWAYS** query the database first:
+   ```bash
+   curl "...companies?company_domain=eq.{DOMAIN}&select=id,company_name,company_domain"
+   ```
+4. **VERIFY** the ID matches the domain before using it
+
+**Preferred approach:** Use the UI to trigger tests. The UI maintains correct ID/domain pairs.
+
+**If manual testing is required:**
+```bash
+# FIRST: Query to get correct company data
+curl -s "https://wvjhddcwpedmkofmhfcp.supabase.co/rest/v1/companies?company_domain=eq.securitypalhq.com&select=id,company_name,company_domain" \
+  -H "apikey: $API_KEY" -H "Authorization: Bearer $API_KEY"
+
+# THEN: Use the EXACT id from that response in your test payload
+```
+
+See `docs/POST_MORTEM_2025_12_17_COMPANY_ID_MISMATCH.md` for what happens when this is violated.
+
+---
+
 ## Current Project State (2025-12-17)
 
 ### What's Working

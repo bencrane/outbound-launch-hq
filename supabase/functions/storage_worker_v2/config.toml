@@ -1,0 +1,2 @@
+[functions.storage_worker_v2]
+verify_jwt = false

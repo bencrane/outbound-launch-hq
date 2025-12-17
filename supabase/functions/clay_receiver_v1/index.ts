@@ -29,7 +29,7 @@ serve(async (req) => {
   }
 
   try {
-    console.log("=== MASTER RECEIVER ===");
+    console.log("=== CLAY RECEIVER V1 ===");
     console.log("Method:", req.method);
 
     // Read raw body
@@ -271,7 +271,7 @@ serve(async (req) => {
     );
 
   } catch (err) {
-    console.error("Master receiver error:", err);
+    console.error("Clay receiver error:", err);
     return new Response(
       JSON.stringify({
         error: err instanceof Error ? err.message : "Unknown error",

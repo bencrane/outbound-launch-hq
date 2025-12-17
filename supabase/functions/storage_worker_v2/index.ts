@@ -20,6 +20,8 @@ interface Destination {
   db: "workspace" | "hq";
   table: string;
   fields: Record<string, string> | null; // null = store raw JSONB
+  insert_mode?: "upsert" | "insert"; // default: upsert
+  on_conflict?: string; // columns for upsert conflict, default: "company_domain"
 }
 
 interface DestinationConfig {
@@ -40,12 +42,38 @@ serve(async (req) => {
   }
 
   try {
-    const body: StorageRequest = await req.json();
-    const { workflow_id, company_id, company_domain, company_name, play_name, batch_id, data } = body;
+    const body = await req.json() as Record<string, unknown>;
+    const { workflow_id, company_id, company_domain, company_name, play_name, batch_id } = body as StorageRequest;
 
-    if (!workflow_id || !company_id || !company_domain || !data) {
+    // Handle both nested "data" object and flat payload formats
+    // If "data" exists and is an object, use it; otherwise extract data from flat payload
+    let data: Record<string, unknown>;
+    if (body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
+      data = body.data as Record<string, unknown>;
+    } else {
+      // Flat payload - extract all fields except known metadata fields
+      const metadataFields = new Set([
+        "workflow_id", "workflow_slug", "company_id", "company_domain", "company_name",
+        "play_name", "batch_id", "source_record_id", "receiver_function_url"
+      ]);
+      data = {};
+      for (const [key, value] of Object.entries(body)) {
+        if (!metadataFields.has(key)) {
+          data[key] = value;
+        }
+      }
+    }
+
+    if (!workflow_id || !company_id || !company_domain) {
       return new Response(
-        JSON.stringify({ error: "Missing required fields: workflow_id, company_id, company_domain, data" }),
+        JSON.stringify({ error: "Missing required fields: workflow_id, company_id, company_domain" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (Object.keys(data).length === 0) {
+      return new Response(
+        JSON.stringify({ error: "No data fields found in payload" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -130,12 +158,32 @@ serve(async (req) => {
         record.data = data;
       }
 
-      // Upsert record
-      const { data: inserted, error: insertError } = await destClient
-        .from(dest.table)
-        .upsert(record, { onConflict: "company_domain" })
-        .select("id")
-        .single();
+      // Insert or upsert based on mode
+      const useInsert = dest.insert_mode === "insert";
+      const conflictColumns = dest.on_conflict || "company_domain";
+
+      let inserted: { id: string } | null = null;
+      let insertError: { message: string } | null = null;
+
+      if (useInsert) {
+        // Plain insert (for tables allowing multiple rows with no unique constraint)
+        const result = await destClient
+          .from(dest.table)
+          .insert(record)
+          .select("id")
+          .single();
+        inserted = result.data;
+        insertError = result.error;
+      } else {
+        // Upsert with configurable conflict columns
+        const result = await destClient
+          .from(dest.table)
+          .upsert(record, { onConflict: conflictColumns })
+          .select("id")
+          .single();
+        inserted = result.data;
+        insertError = result.error;
+      }
 
       if (insertError || !inserted?.id) {
         const errorMessage = insertError?.message || "Insert returned no ID";
