@@ -82,10 +82,15 @@ serve(async (req) => {
 
         const htmlContent = await zenrowsResponse.text();
 
-        // Send to storage worker
+        // Send to storage worker (edge function to edge function call)
+        const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
         const storageResponse = await fetch(storageWorkerUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": supabaseServiceKey || "",
+            "Authorization": `Bearer ${supabaseServiceKey}`,
+          },
           body: JSON.stringify({
             workflow_id: workflow.id,
             company_id: company.company_id,
