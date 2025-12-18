@@ -98,22 +98,22 @@ serve(async (req) => {
     // Process each company
     for (const company of companies) {
       try {
-        // 1. Fetch links from case_studies_page_cleaned (Step 5 output)
-        const { data: cleanedData, error: fetchError } = await workspaceClient
-          .from("case_studies_page_cleaned")
+        // 1. Fetch links from case_studies_page_scrapes (Step 3 output)
+        const { data: scrapedData, error: fetchError } = await workspaceClient
+          .from("case_studies_page_scrapes")
           .select("links, case_studies_page_url")
           .eq("company_domain", company.company_domain)
           .single();
 
-        if (fetchError || !cleanedData) {
-          throw new Error(`No cleaned case studies page data found for ${company.company_domain}. Run Step 5 first.`);
+        if (fetchError || !scrapedData) {
+          throw new Error(`No case studies page scrape found for ${company.company_domain}. Run Step 3 first.`);
         }
 
-        const links: Link[] = cleanedData.links || [];
-        const baseUrl = cleanedData.case_studies_page_url;
+        const links: Link[] = scrapedData.links || [];
+        const baseUrl = scrapedData.case_studies_page_url;
 
         if (links.length === 0) {
-          throw new Error(`No links found in cleaned case studies page for ${company.company_domain}`);
+          throw new Error(`No links found in case studies page scrape for ${company.company_domain}`);
         }
 
         // 2. Call OpenAI to identify individual case study URLs

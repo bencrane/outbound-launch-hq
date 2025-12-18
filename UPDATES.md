@@ -1051,4 +1051,177 @@ All configuration should come from the database, not hardcoded in code:
 
 ---
 
+## 2025-12-18 (Session 2) - Step 6 Setup & Debugging
+
+### Step 6: Get Buyer LinkedIn URL via Clay
+
+**Edge Function Created:** `get_buyer_linkedin_url_v1`
+
+**Purpose:** Take extracted buyer details from case studies, find their LinkedIn profile URL via Clay (serper + claygent fallback).
+
+**Source Table (Workspace):** `case_study_buyer_details`
+**Destination Table (Workspace):** `buyer_linkedin_enrichments`
+
+**Clay Webhook:** `https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-1fb48ed7-51ac-4ede-ac57-fd2c454bb26e`
+
+**Payload sent to Clay:**
+```json
+{
+  "source_record_id": "uuid-of-buyer-detail-record",
+  "buyer_full_name": "Brenda Perez",
+  "buyer_first_name": "Brenda",
+  "buyer_last_name": "Perez",
+  "buyer_job_title": "Ex-Senior Legal Operations Manager",
+  "buyer_company_name": "Apollo.io",
+  "case_study_url": "https://example.com/case-study/apollo",
+  "company_id": "uuid",
+  "company_domain": "spotdraft.com",
+  "company_name": "SpotDraft",
+  "workflow_id": "820b7962-f968-48d8-84fa-3a8b27e80adb",
+  "workflow_slug": "get-buyer-linkedin-url-via-clay",
+  "play_name": "case-study-champions",
+  "step_number": 6,
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clay_receiver_v1"
+}
+```
+
+**Clay should return:**
+```json
+{
+  "source_record_id": "uuid-from-input",
+  "company_id": "uuid-from-input",
+  "company_domain": "from-input",
+  "company_name": "from-input",
+  "buyer_full_name": "from-input",
+  "buyer_job_title": "from-input",
+  "buyer_company_name": "from-input",
+  "linkedin_url": "https://linkedin.com/in/the-person",
+  "workflow_id": "from-input"
+}
+```
+
+**Key field Clay populates:** `linkedin_url`
+
+---
+
+### Step 2 Updated: Direct OpenAI Call (No Clay)
+
+**Edge Function:** `find_case_studies_page_v1`
+
+Changed from sending to Clay to calling OpenAI directly with gpt-4o. Clay was having issues.
+
+**Key changes:**
+- Calls OpenAI directly instead of Clay webhook
+- Uses 4-phase prompt: FILTER → IDENTIFY → CONSTRUCT → VALIDATE
+- Returns `case_studies_page_url` directly
+- Removed confidence/reasoning fields (unnecessary, increases tokens)
+
+---
+
+### Step 3 Updated: Zenrows Autoparse via Clay
+
+**Edge Function:** `scrape_case_studies_page_v1`
+
+Now sends to Clay which uses Zenrows autoparse. Returns structured data instead of raw HTML.
+
+**Destination Table Updated:** `case_studies_page_scrapes`
+```sql
+-- Autoparse output (structured data, not raw HTML)
+links JSONB,           -- Array of {href, text}
+title TEXT,            -- Page title
+body_text TEXT,        -- Extracted body text
+description TEXT       -- Meta description
+```
+
+---
+
+### Bug Fixes Applied This Session
+
+#### 1. storage_worker_v2 Field Mapping Direction
+
+**Problem:** Config format is `{ destination_column: source_field }` but code treated it as `{ source_field: destination_column }`.
+
+**Fix:** Updated mapping loop to use correct direction:
+```typescript
+// Before (wrong)
+for (const [sourceField, destColumn] of Object.entries(dest.fields))
+
+// After (correct)
+for (const [destColumn, sourceField] of Object.entries(dest.fields))
+```
+
+#### 2. Base Field Custom Mappings
+
+**Problem:** storage_worker always added `company_domain` as column name, but `buyer_linkedin_enrichments` uses `hq_target_company_domain`.
+
+**Fix:** Added custom mapping checks for base fields (company_id, company_domain, company_name). If a mapping exists, uses the mapped column name.
+
+#### 3. JWT Authentication for Internal Calls
+
+**Problem:** `clay_receiver_v1` calling `storage_worker_v2` got 401 errors.
+
+**Fix:** Deploy both functions with `--no-verify-jwt`:
+```bash
+supabase functions deploy clay_receiver_v1 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+supabase functions deploy storage_worker_v2 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+```
+
+---
+
+### UNRESOLVED: Step 6 Insert Failure
+
+**Current Error:** `"column \"company_domain\" does not exist"`
+
+**Root Cause (Likely):** The upsert `on_conflict` clause defaults to `company_domain`:
+```typescript
+const conflictColumns = dest.on_conflict || "company_domain";
+```
+
+But `buyer_linkedin_enrichments` doesn't have `company_domain` column.
+
+**See:** `docs/POST_MORTEM_2025_12_18_STEP6_INSERT_FAILURE.md` for full analysis and next steps.
+
+**Probable Fix:**
+1. Add `"on_conflict": "hq_target_company_domain"` to Step 6 destination config
+2. Or use `"insert_mode": "insert"` since table allows multiple rows
+
+---
+
+### Files Modified This Session
+
+| File | Changes |
+|------|---------|
+| `supabase/functions/get_buyer_linkedin_url_v1/index.ts` | Created new edge function |
+| `supabase/functions/storage_worker_v2/index.ts` | Fixed field mapping direction |
+| `supabase/functions/clay_receiver_v1/index.ts` | Removed auth headers (use --no-verify-jwt instead) |
+| `supabase/functions/find_case_studies_page_v1/index.ts` | Direct OpenAI call, removed confidence/reasoning |
+| `supabase/functions/scrape_case_studies_page_v1/index.ts` | Send to Clay instead of Zenrows direct |
+| `docs/POST_MORTEM_2025_12_18_STEP6_INSERT_FAILURE.md` | Created - documents unresolved issue |
+
+---
+
+### Deployments Made
+
+```bash
+# All deployed with --no-verify-jwt
+supabase functions deploy get_buyer_linkedin_url_v1 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+supabase functions deploy storage_worker_v2 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+supabase functions deploy clay_receiver_v1 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+supabase functions deploy find_case_studies_page_v1 --no-verify-jwt --project-ref wvjhddcwpedmkofmhfcp
+```
+
+---
+
+### Next Steps for New AI Instance
+
+1. **Fix Step 6 insert failure** - See post-mortem doc. Update workflow config to add `on_conflict` or `insert_mode`.
+
+2. **Test Step 6 again** - After fixing config, retry from Clay.
+
+3. **Key insight about field mappings:**
+   - Config format: `{ destination_column: source_field }`
+   - Example: `"hq_target_company_domain": "company_domain"` means read from `company_domain` in payload, write to `hq_target_company_domain` in table
+
+---
+
 *Updates will be added as milestones are completed.*

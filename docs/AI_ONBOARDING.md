@@ -1,6 +1,6 @@
 # Outbound Launch HQ - AI Onboarding
 
-**Last Updated:** 2025-12-17
+**Last Updated:** 2025-12-18
 
 ---
 
@@ -84,26 +84,37 @@ All configuration comes from the database, not hardcoded in code:
 | Step | Name | Edge Function | Status |
 |------|------|---------------|--------|
 | 1 | Scrape Homepage | `scrape_homepage_v1` | ✅ Working |
-| 2 | Find Case Studies Page URL | `find_case_studies_page_v1` | 🔄 Config-driven, needs testing |
-| 3 | Scrape Case Studies Page | `scrape_case_studies_page_v1` | Needs testing |
-| 4 | Extract Specific Case Study URLs | `extract_case_study_urls_v1` | Needs testing |
-| 5 | Extract Buyer Details via Clay | `extract_buyer_details_v1` | Needs testing |
-| 6 | Get Buyer LinkedIn URL | `get_buyer_linkedin_url_v1` | Needs testing |
-| 7 | Enrich LinkedIn Profile | `enrich_linkedin_profile_v1` | Needs testing |
+| 2 | Find Case Studies Page URL | `find_case_studies_page_v1` | ✅ Working (direct OpenAI call) |
+| 3 | Scrape Case Studies Page | `scrape_case_studies_page_v1` | ✅ Working (Clay + Zenrows autoparse) |
+| 4 | Extract Specific Case Study URLs | `extract_case_study_urls_v1` | ✅ Working (direct OpenAI call) |
+| 5 | Extract Buyer Details via Clay | `extract_buyer_details_v1` | ✅ Working |
+| 6 | Get Buyer LinkedIn URL | `get_buyer_linkedin_url_v1` | ✅ Config fixed (needs testing) |
+| 7 | Enrich LinkedIn Profile | `enrich_linkedin_profile_v1` | Not started |
 
 **Data Flow (new - autoparse, no cleaning steps):**
 ```
-Homepage (autoparse) → Case Studies Page URL (AI) → Scrape Case Studies → Extract URLs → Extract Buyers
+Homepage (autoparse) → Case Studies Page URL (AI) → Scrape Case Studies → Extract URLs → Extract Buyers → Get LinkedIn URLs
 ```
+
+### RECENTLY FIXED: Step 6 Insert Failure
+
+**See:** `docs/POST_MORTEM_2025_12_18_STEP6_INSERT_FAILURE.md`
+
+**Problem:** Insert to `buyer_linkedin_enrichments` failed with "column 'company_domain' does not exist"
+
+**Root Cause:** `storage_worker_v2` defaults `on_conflict` to `"company_domain"` but the table uses `hq_target_company_domain`
+
+**Fix Applied:** Added `"insert_mode": "insert"` to Step 6 destination config (bypasses upsert/on_conflict entirely)
 
 ### What Was Just Changed (2025-12-18)
 
-1. **Deprecated n8n cleaning workflows** - Zenrows autoparse returns structured data
-2. **Dropped tables:** `company_homepage_cleaned`, `case_studies_page_cleaned`
-3. **Renumbered workflows** - Steps are now 1-7 continuous
-4. **Added `edge_function_name`** to all workflow configs in DB
-5. **Updated UI** to read edge function from DB instead of hardcoded mapping
-6. **Reset all data** - Clean slate for testing
+1. **Step 2 now calls OpenAI directly** - Clay was having issues, switched to gpt-4o
+2. **Step 3 uses Clay + Zenrows autoparse** - Returns structured data (links, title, bodyText)
+3. **Step 4 calls OpenAI directly** - Extracts case study URLs from links array
+4. **Step 6 created** - `get_buyer_linkedin_url_v1` dispatches to Clay for LinkedIn lookup
+5. **Fixed `storage_worker_v2` field mappings** - Was interpreting config direction backwards
+6. **Deprecated n8n cleaning workflows** - Zenrows autoparse returns structured data
+7. **Dropped tables:** `company_homepage_cleaned`, `case_studies_page_cleaned`
 
 ### Test Companies (3 enrolled in "case-study-champions" play)
 
@@ -191,34 +202,79 @@ Workflows are configured in `db_driven_enrichment_workflows` with a `destination
 
 ```json
 {
+  "destination_endpoint_url": "https://api.clay.com/v3/sources/webhook/...",
+  "receiver_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clay_receiver_v1",
+  "storage_worker_function_url": "https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/storage_worker_v2",
+  "edge_function_name": "scrape_homepage_v1",
   "destinations": [
     {
       "db": "workspace",
       "table": "company_homepage_scrapes",
       "fields": {
-        "homepage_html": "homepage_html",
-        "scraped_at": "scraped_at"
-      }
+        "destination_column": "source_field_from_payload"
+      },
+      "insert_mode": "upsert",
+      "on_conflict": "company_domain"
     }
   ]
 }
 ```
 
+### CRITICAL: Field Mapping Format
+
+**Format is `{ destination_column: source_field }` NOT `{ source_field: destination_column }`**
+
+Example for `buyer_linkedin_enrichments` table:
+```json
+{
+  "fields": {
+    "hq_target_company_id": "company_id",
+    "hq_target_company_domain": "company_domain",
+    "contact_linkedin_url": "linkedin_url"
+  }
+}
+```
+
+This means: "put the value of `company_id` from payload into the `hq_target_company_id` column"
+
+### Destination Config Options
+
 - `db`: "workspace" or "hq"
 - `table`: destination table name
-- `fields`: mapping from payload field → DB column (null = store as raw JSONB)
+- `fields`: mapping from DB column → payload field (null = store as raw JSONB)
+- `insert_mode`: "upsert" (default) or "insert"
+- `on_conflict`: column(s) for upsert conflict resolution (default: "company_domain")
 
 ---
 
 ## Key Edge Functions
 
+### Step Functions (Dispatchers)
+| Function | Step | Purpose |
+|----------|------|---------|
+| `scrape_homepage_v1` | 1 | Sends to Clay → Zenrows autoparse |
+| `find_case_studies_page_v1` | 2 | Calls OpenAI directly (gpt-4o) |
+| `scrape_case_studies_page_v1` | 3 | Sends to Clay → Zenrows autoparse |
+| `extract_case_study_urls_v1` | 4 | Calls OpenAI directly (gpt-4o) |
+| `extract_buyer_details_v1` | 5 | Sends to Clay |
+| `get_buyer_linkedin_url_v1` | 6 | Sends to Clay |
+
+### Generic Infrastructure Functions
 | Function | Purpose |
 |----------|---------|
-| `scrape_homepage_v1` | Step 1: Calls Zenrows, sends to storage_worker |
-| `clean_homepage_v1` | Step 2: Sends raw HTML to n8n for cleaning |
-| `clean_homepage_receiver_v1` | Step 2: Receives n8n callback, sends to storage_worker |
+| `clay_receiver_v1` | Receives all Clay callbacks, routes to storage_worker |
 | `storage_worker_v2` | **Generic**: Stores data based on workflow config, verifies, calls logger |
 | `enrichment_logger_v1` | **Generic**: Writes to enrichment_results_log + company_play_step_completions |
+
+### Clay Integration Pattern
+```
+Dispatcher → Clay → [enrichment] → clay_receiver_v1 → storage_worker_v2 → enrichment_logger_v1
+```
+
+**IMPORTANT:** When setting up Clay tables:
+- Use **POST** method (not GET) - "Empty request body" errors usually mean wrong HTTP method
+- Receiver URL: `https://wvjhddcwpedmkofmhfcp.supabase.co/functions/v1/clay_receiver_v1`
+- Include `workflow_id` in payload for routing
 
 ---
 
@@ -306,9 +362,26 @@ await fetch(storageWorkerUrl, {
 
 ## Deploying Edge Functions
 
+### Standard deployment (internal functions):
 ```bash
 supabase functions deploy <function_name> --project-ref wvjhddcwpedmkofmhfcp
 ```
+
+### CRITICAL: External webhook receivers require `--no-verify-jwt`
+
+Functions that receive callbacks from external services (Clay, n8n, Zenrows) **MUST** be deployed with JWT verification disabled:
+
+```bash
+supabase functions deploy clay_receiver_v1 --project-ref wvjhddcwpedmkofmhfcp --no-verify-jwt
+supabase functions deploy storage_worker_v2 --project-ref wvjhddcwpedmkofmhfcp --no-verify-jwt
+```
+
+Without this flag, external webhooks will get **401 Invalid JWT** errors.
+
+**Functions requiring `--no-verify-jwt`:**
+- `clay_receiver_v1` - Receives Clay webhook callbacks
+- `storage_worker_v2` - Called by receiver functions
+- Any `*_receiver_v1` function
 
 ---
 
@@ -328,7 +401,8 @@ outbound-launch-hq/
 │   ├── AI_ONBOARDING.md              ← You are here
 │   ├── SOURCE_OF_TRUTH_TABLES.md     ★ MISSION CRITICAL
 │   ├── ENRICHMENT_SYSTEM_ARCHITECTURE.md
-│   └── RESETTING_ENRICHMENT_STATE.md
+│   ├── RESETTING_ENRICHMENT_STATE.md
+│   └── POST_MORTEM_*.md              ← Post-mortems for bugs/issues
 ├── src/
 │   ├── app/
 │   │   ├── manual-gtm-enrichment/    ★ Main enrichment UI
@@ -340,9 +414,21 @@ outbound-launch-hq/
 │   └── functions/
 │       ├── storage_worker_v2/        ★ Generic storage with verification
 │       ├── enrichment_logger_v1/     ★ Centralized logging
+│       ├── clay_receiver_v1/         ★ Clay webhook receiver
 │       ├── scrape_homepage_v1/       Step 1
-│       ├── clean_homepage_v1/        Step 2 sender
-│       └── clean_homepage_receiver_v1/ Step 2 receiver
-├── UPDATES.md
+│       ├── find_case_studies_page_v1/ Step 2 (OpenAI direct)
+│       ├── scrape_case_studies_page_v1/ Step 3 (Clay)
+│       ├── extract_case_study_urls_v1/ Step 4 (OpenAI direct)
+│       ├── extract_buyer_details_v1/ Step 5 (Clay)
+│       └── get_buyer_linkedin_url_v1/ Step 6 (Clay)
+├── UPDATES.md                        ★ Development changelog
 └── guidance.md
 ```
+
+## Post-Mortems
+
+When bugs are found and fixed, document them:
+- `docs/POST_MORTEM_2025_12_17_INCOMPLETE_RESET.md` - Deleting data without tracking records
+- `docs/POST_MORTEM_2025_12_17_COMPANY_ID_MISMATCH.md` - Using wrong company IDs
+- `docs/POST_MORTEM_2025_12_18_HARDCODED_EDGE_FUNCTION_MAPPING.md` - UI hardcoding vs DB config
+- `docs/POST_MORTEM_2025_12_18_STEP6_INSERT_FAILURE.md` - Step 6 insert failure (RESOLVED)

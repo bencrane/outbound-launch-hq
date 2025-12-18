@@ -237,9 +237,7 @@ serve(async (req) => {
 
     const storageResponse = await fetch(storageWorkerUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: rawBody, // Forward the original payload as-is
     });
 

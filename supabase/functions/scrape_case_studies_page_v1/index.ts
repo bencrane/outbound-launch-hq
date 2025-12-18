@@ -21,6 +21,18 @@ interface RequestBody {
   play_name?: string;
 }
 
+interface SourceConfig {
+  db: "workspace" | "hq";
+  table: string;
+  select_columns: string[];
+}
+
+interface DestinationConfig {
+  source_config?: SourceConfig;
+  destination_endpoint_url?: string;
+  receiver_function_url?: string;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -44,21 +56,15 @@ serve(async (req) => {
       );
     }
 
-    const zenrowsApiKey = Deno.env.get("ZENROWS_API_KEY");
-    const storageWorkerUrl = Deno.env.get("STORAGE_WORKER_URL");
+    // Get environment variables
+    const hqUrl = Deno.env.get("SUPABASE_URL");
+    const hqKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const workspaceUrl = Deno.env.get("WORKSPACE_URL");
     const workspaceKey = Deno.env.get("WORKSPACE_SERVICE_ROLE_KEY");
 
-    if (!zenrowsApiKey) {
+    if (!hqUrl || !hqKey) {
       return new Response(
-        JSON.stringify({ error: "ZENROWS_API_KEY not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    if (!storageWorkerUrl) {
-      return new Response(
-        JSON.stringify({ error: "STORAGE_WORKER_URL not configured" }),
+        JSON.stringify({ error: "HQ database credentials not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -70,14 +76,51 @@ serve(async (req) => {
       );
     }
 
+    const hqClient = createClient(hqUrl, hqKey);
     const workspaceClient = createClient(workspaceUrl, workspaceKey);
 
-    const results: Array<{ company_domain: string; status: string; error?: string; url?: string }> = [];
+    // Look up workflow config from database
+    const { data: workflowConfig, error: workflowError } = await hqClient
+      .from("db_driven_enrichment_workflows")
+      .select("id, workflow_slug, play_id, overall_step_number, destination_config")
+      .eq("id", workflow.id)
+      .single();
 
-    // Process each company
-    for (const company of companies) {
+    if (workflowError || !workflowConfig) {
+      return new Response(
+        JSON.stringify({ error: `Workflow not found: ${workflow.id}`, details: workflowError?.message }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const destConfig = workflowConfig.destination_config as DestinationConfig | null;
+    const destinationEndpointUrl = destConfig?.destination_endpoint_url;
+    const receiverUrl = destConfig?.receiver_function_url;
+
+    if (!destinationEndpointUrl) {
+      return new Response(
+        JSON.stringify({
+          error: "No destination_endpoint_url configured for this workflow",
+          hint: "Set destination_config.destination_endpoint_url in db_driven_enrichment_workflows"
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log(`scrape_case_studies_page_v1: sending ${companies.length} companies to Clay`);
+    console.log(`Clay endpoint: ${destinationEndpointUrl}`);
+
+    const results: Array<{ company_domain: string; status: string; error?: string; url?: string }> = [];
+    const resolvedPlayName = play_name || workflowConfig.play_id || "unknown";
+
+    // Rate limit: 100ms between requests
+    const DELAY_MS = 100;
+
+    for (let i = 0; i < companies.length; i++) {
+      const company = companies[i];
+
       try {
-        // 1. Fetch the case studies page URL from Step 3 results
+        // 1. Fetch the case studies page URL from Step 2 results
         const { data: urlData, error: fetchError } = await workspaceClient
           .from("company_case_studies_page")
           .select("case_studies_page_url")
@@ -85,7 +128,7 @@ serve(async (req) => {
           .single();
 
         if (fetchError || !urlData) {
-          throw new Error(`No case studies page URL found for ${company.company_domain}. Run Step 3 first.`);
+          throw new Error(`No case studies page URL found for ${company.company_domain}. Run Step 2 first.`);
         }
 
         const targetUrl = urlData.case_studies_page_url;
@@ -94,67 +137,62 @@ serve(async (req) => {
           throw new Error(`Case studies page URL is null for ${company.company_domain}`);
         }
 
-        // 2. Call Zenrows with the URL
-        const zenrowsParams = new URLSearchParams({
-          apikey: zenrowsApiKey,
-          url: targetUrl,
-          js_render: "true",
-          premium_proxy: "true",
-          proxy_country: "us",
-        });
+        // 2. Build payload for Clay
+        const payload = {
+          // Company info
+          company_id: company.company_id,
+          company_domain: company.company_domain,
+          company_name: company.company_name,
 
-        const zenrowsResponse = await fetch(`https://api.zenrows.com/v1/?${zenrowsParams.toString()}`);
+          // The URL to scrape
+          case_studies_page_url: targetUrl,
 
-        if (!zenrowsResponse.ok) {
-          throw new Error(`Zenrows returned ${zenrowsResponse.status} for ${targetUrl}`);
-        }
+          // Workflow context (so Clay can pass it back in callback)
+          workflow_id: workflow.id,
+          workflow_slug: workflowConfig.workflow_slug,
+          play_name: resolvedPlayName,
+          step_number: workflowConfig.overall_step_number,
 
-        const htmlContent = await zenrowsResponse.text();
+          // Callback URL for Clay to send results
+          receiver_function_url: receiverUrl,
+        };
 
-        // 3. Send to storage worker
-        const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-        const storageResponse = await fetch(storageWorkerUrl, {
+        console.log(`[${i + 1}/${companies.length}] Sending to Clay: ${company.company_domain} (${targetUrl})`);
+
+        // 3. Send to Clay
+        const response = await fetch(destinationEndpointUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "apikey": supabaseServiceKey || "",
-            "Authorization": `Bearer ${supabaseServiceKey}`,
-          },
-          body: JSON.stringify({
-            workflow_id: workflow.id,
-            company_id: company.company_id,
-            company_domain: company.company_domain,
-            company_name: company.company_name,
-            play_name: play_name,
-            data: {
-              case_studies_page_url: targetUrl,
-              case_studies_page_html: htmlContent,
-              scraped_at: new Date().toISOString(),
-            },
-          }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
         });
 
-        if (!storageResponse.ok) {
-          const errText = await storageResponse.text();
-          throw new Error(`Storage worker failed: ${errText}`);
+        if (response.ok) {
+          results.push({ company_domain: company.company_domain, status: "sent", url: targetUrl });
+        } else {
+          const errText = await response.text();
+          throw new Error(`Clay returned ${response.status}: ${errText.substring(0, 200)}`);
         }
-
-        results.push({ company_domain: company.company_domain, status: "success", url: targetUrl });
 
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         console.error(`Error processing ${company.company_domain}:`, message);
         results.push({ company_domain: company.company_domain, status: "error", error: message });
       }
+
+      // Rate limit delay (skip on last item)
+      if (i < companies.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      }
     }
 
-    const successCount = results.filter(r => r.status === "success").length;
+    const successCount = results.filter(r => r.status === "sent").length;
 
     return new Response(
       JSON.stringify({
         total: companies.length,
-        success: successCount,
+        sent: successCount,
         failed: companies.length - successCount,
+        message: `Sent ${successCount} companies to Clay. Results will arrive via callback.`,
         results,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

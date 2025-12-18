@@ -1,12 +1,22 @@
--- Step 4 destination table: stores the scraped HTML from case studies pages
+-- Step 3 destination: Scraped MAIN case studies listing page (autoparse output)
+-- Source: company_case_studies_page.case_studies_page_url (Step 2 output)
+-- One row per company - stores the autoparse output from their /customers or /case-studies page
+
 CREATE TABLE IF NOT EXISTS case_studies_page_scrapes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL,
   company_domain TEXT NOT NULL,
   company_name TEXT,
+
+  -- The URL that was scraped
   case_studies_page_url TEXT,
-  case_studies_page_html TEXT,
-  scraped_at TIMESTAMPTZ,
+
+  -- Zenrows autoparse output (structured data, not raw HTML)
+  links JSONB,              -- Array of {href, text} - contains individual case study URLs for Step 4
+  title TEXT,               -- Page title
+  body_text TEXT,           -- Extracted body text
+  description TEXT,         -- Meta description
+
   created_at TIMESTAMPTZ DEFAULT now(),
 
   CONSTRAINT unique_company_domain_cs_scrapes UNIQUE (company_domain)

@@ -136,25 +136,55 @@ serve(async (req) => {
     for (const dest of workflowConfig.destination_config.destinations) {
       const destClient = getClient(dest.db);
 
-      // Build record
-      const record: Record<string, unknown> = {
-        company_id,
-        company_domain,
-      };
-
-      if (company_name) {
-        record.company_name = company_name;
-      }
+      // Build record - check if base fields have custom mappings
+      // Config format is: { destination_column: source_field }
+      const record: Record<string, unknown> = {};
 
       if (dest.fields) {
-        // Map fields according to config
-        for (const [sourceField, destColumn] of Object.entries(dest.fields)) {
-          if (data[sourceField] !== undefined) {
-            record[destColumn] = data[sourceField];
+        // Check if company_id has a custom mapping (find entry where VALUE = "company_id")
+        const companyIdMapping = Object.entries(dest.fields).find(([, srcField]) => srcField === "company_id");
+        if (companyIdMapping) {
+          record[companyIdMapping[0]] = company_id; // [0] is the dest column
+        } else {
+          record.company_id = company_id;
+        }
+
+        // Check if company_domain has a custom mapping
+        const domainMapping = Object.entries(dest.fields).find(([, srcField]) => srcField === "company_domain");
+        if (domainMapping) {
+          record[domainMapping[0]] = company_domain; // [0] is the dest column
+        } else {
+          record.company_domain = company_domain;
+        }
+
+        // Check if company_name has a custom mapping
+        if (company_name) {
+          const nameMapping = Object.entries(dest.fields).find(([, srcField]) => srcField === "company_name");
+          if (nameMapping) {
+            record[nameMapping[0]] = company_name; // [0] is the dest column
+          } else {
+            record.company_name = company_name;
+          }
+        }
+
+        // Map other fields according to config
+        // Config format: { destination_column: source_field }
+        for (const [destColumn, sourceField] of Object.entries(dest.fields)) {
+          // Skip base fields we already handled
+          if (["company_id", "company_domain", "company_name"].includes(sourceField as string)) {
+            continue;
+          }
+          if (data[sourceField as string] !== undefined) {
+            record[destColumn] = data[sourceField as string];
           }
         }
       } else {
-        // No field mapping = store entire payload as JSONB
+        // No field mapping = use default column names + store payload as JSONB
+        record.company_id = company_id;
+        record.company_domain = company_domain;
+        if (company_name) {
+          record.company_name = company_name;
+        }
         record.data = data;
       }
 
